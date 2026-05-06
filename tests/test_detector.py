@@ -254,3 +254,30 @@ def test_detected_requires_normal_conditions_not_would_signal_only():
     s = d.detect(mt(drop=0.2, bounce=0.001, low=99.0), mt(drop=0.0), mt(drop=0.0), buf(ask=100.2))
     assert s.would_signal is True
     assert s.detected is False
+
+
+def test_reclaim_level_uses_effective_bounce_threshold():
+    d = LiquidityGrabDetector(now_ms_provider=FakeClock())
+    d.set_runtime_flags(signal_unlock_debug=True, p90_bounce_pct=0.004)
+    s = d.detect(mt(drop=0.2, bounce=0.01, low=99.0), mt(drop=0.0), mt(drop=0.0), buf(ask=100.2))
+    assert s.effective_bounce_threshold == 0.003
+    assert s.reclaim_level == 99.0 * (1 + (0.003 / 100.0))
+
+
+def test_detected_can_happen_after_effective_bounce_reclaim_hold():
+    clock = FakeClock()
+    d = LiquidityGrabDetector(now_ms_provider=clock)
+    d.set_runtime_flags(signal_unlock_debug=True, p90_bounce_pct=0.004)
+    b = buf(ask=100.2)
+    d.detect(mt(drop=0.2, bounce=0.01, low=99.0), mt(drop=0.0), mt(drop=0.0), b)
+    clock.advance(RECLAIM_HOLD_MS + 1)
+    s = d.detect(mt(drop=0.2, bounce=0.01, low=99.0), mt(drop=0.0), mt(drop=0.0), b)
+    assert s.detected is True
+
+
+def test_would_signal_not_directly_detected():
+    d = LiquidityGrabDetector(now_ms_provider=FakeClock())
+    d.set_runtime_flags(signal_unlock_debug=True, p90_bounce_pct=0.02)
+    s = d.detect(mt(drop=0.2, bounce=0.001, low=99.0), mt(drop=0.0), mt(drop=0.0), buf(ask=100.2))
+    assert s.would_signal is True
+    assert s.detected is False

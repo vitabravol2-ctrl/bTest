@@ -307,6 +307,8 @@ class MainWindow(QMainWindow):
         self.lbl_profile = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
         self.lbl_drop_threshold = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
         self.lbl_bounce_threshold = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_effective_bounce = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_reclaim_distance = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
         self.lbl_score_threshold = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
         self.debug_labels: dict[str, QLabel] = {}
 
@@ -338,8 +340,12 @@ class MainWindow(QMainWindow):
         dg.addWidget(self.lbl_drop_threshold, 13, 1)
         dg.addWidget(QLabel("Bounce threshold"), 14, 0)
         dg.addWidget(self.lbl_bounce_threshold, 14, 1)
-        dg.addWidget(QLabel("Score threshold"), 15, 0)
-        dg.addWidget(self.lbl_score_threshold, 15, 1)
+        dg.addWidget(QLabel("Effective Bounce"), 15, 0)
+        dg.addWidget(self.lbl_effective_bounce, 15, 1)
+        dg.addWidget(QLabel("Reclaim Distance"), 16, 0)
+        dg.addWidget(self.lbl_reclaim_distance, 16, 1)
+        dg.addWidget(QLabel("Score threshold"), 17, 0)
+        dg.addWidget(self.lbl_score_threshold, 17, 1)
         debug_items = [
             ("DROP condition", "drop_ok"),
             ("BOUNCE condition", "bounce_ok"),
@@ -348,7 +354,7 @@ class MainWindow(QMainWindow):
             ("HOLD condition", "hold_ok"),
             ("TREND condition", "slow_trend_ok"),
         ]
-        row_i = 16
+        row_i = 18
         for title, key in debug_items:
             lbl = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
             self.debug_labels[key] = lbl
@@ -561,6 +567,8 @@ class MainWindow(QMainWindow):
         self.lbl_effective_hold.setText(f"{signal.effective_hold_ms} / {signal.base_hold_ms} ms")
         self.lbl_hold_reason.setText(signal.hold_reduction_reason or "base")
         self.lbl_adaptive_hold.setText("ON" if signal.adaptive_hold_active else "OFF")
+        self.lbl_effective_bounce.setText(f"{signal.effective_bounce_threshold:.5f}%")
+        self.lbl_reclaim_distance.setText(f"{signal.reclaim_distance_pct:.5f}%")
         debug = signal.debug or {}
         flag_to_name = {
             "drop_ok": "DROP",

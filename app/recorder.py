@@ -77,6 +77,10 @@ class SignalRecorder:
             "base_hold_ms": int(getattr(signal, "base_hold_ms", 0)),
             "effective_hold_ms": int(getattr(signal, "effective_hold_ms", 0)),
             "hold_reduction_reason": str(getattr(signal, "hold_reduction_reason", "")),
+            "effective_bounce_threshold": float(getattr(signal, "effective_bounce_threshold", 0.0)),
+            "base_bounce_threshold": float(getattr(signal, "base_bounce_threshold", 0.0)),
+            "reclaim_level_source": str(getattr(signal, "reclaim_level_source", "")),
+            "reclaim_distance_pct": float(getattr(signal, "reclaim_distance_pct", 0.0)),
             "debug": dict(getattr(signal, "debug", {})),
             "profile_name": str(getattr(profile, "name", "CONSERVATIVE")),
             "thresholds": {
