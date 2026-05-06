@@ -61,8 +61,17 @@ CUSTOM = ThresholdProfile(
     max_slow_trend_drop_pct=0.35,
     signal_min_score=55,
 )
+CUSTOM_EXTREME_RESEARCH = ThresholdProfile(
+    name="CUSTOM_EXTREME_RESEARCH",
+    min_grab_drop_pct=0.006,
+    min_reclaim_bounce_pct=0.003,
+    min_impulse_speed_pct_per_sec=0.0005,
+    max_trend_drop_mid_pct=0.250,
+    max_slow_trend_drop_pct=0.400,
+    signal_min_score=45,
+)
 
-PROFILES = {profile.name: profile for profile in (CONSERVATIVE, BALANCED, SENSITIVE, DEBUG_ULTRA, CUSTOM)}
+PROFILES = {profile.name: profile for profile in (CONSERVATIVE, BALANCED, SENSITIVE, DEBUG_ULTRA, CUSTOM, CUSTOM_EXTREME_RESEARCH)}
 
 
 def get_profile(profile_name: str, custom_profiles: dict[str, ThresholdProfile] | None = None) -> ThresholdProfile:

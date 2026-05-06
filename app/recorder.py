@@ -48,7 +48,7 @@ class SignalRecorder:
         self.flush_to_file()
         self._active = False
 
-    def record_tick(self, tick, metrics, signal, fsm_state: str, profile=None, signal_quality=None, paper_trade_opened: bool = False, paper_trade_result: str | None = None) -> None:
+    def record_tick(self, tick, metrics, signal, fsm_state: str, profile=None, signal_quality=None, paper_trade_opened: bool = False, paper_trade_result: str | None = None, paper_trade=None, paper_stats=None) -> None:
         if not self._active:
             return
 
@@ -81,6 +81,9 @@ class SignalRecorder:
             "base_bounce_threshold": float(getattr(signal, "base_bounce_threshold", 0.0)),
             "reclaim_level_source": str(getattr(signal, "reclaim_level_source", "")),
             "reclaim_distance_pct": float(getattr(signal, "reclaim_distance_pct", 0.0)),
+            "actual_bounce_pct": float(getattr(signal, "actual_bounce_pct", 0.0)),
+            "bounce_gap_pct": float(getattr(signal, "bounce_gap_pct", 0.0)),
+            "bounce_ok_effective": bool(getattr(signal, "bounce_ok_effective", False)),
             "debug": dict(getattr(signal, "debug", {})),
             "profile_name": str(getattr(profile, "name", "CONSERVATIVE")),
             "thresholds": {
@@ -92,6 +95,12 @@ class SignalRecorder:
             "signal_grade": str(getattr(signal_quality, "grade", "")) if signal_quality else "",
             "paper_trade_opened": bool(paper_trade_opened),
             "paper_trade_result": str(paper_trade_result or ""),
+            "paper_entry_price": float(getattr(paper_trade, "entry_price", 0.0)) if paper_trade else 0.0,
+            "paper_exit_price": float(getattr(paper_trade, "exit_price", 0.0)) if paper_trade else 0.0,
+            "paper_gross_pnl_usdt": float(getattr(paper_trade, "gross_pnl_usdt", 0.0)) if paper_trade else 0.0,
+            "paper_net_pnl_usdt": float(getattr(paper_trade, "net_pnl_usdt", 0.0)) if paper_trade else 0.0,
+            "paper_fee_usdt": float(getattr(paper_trade, "fees_usdt", 0.0)) if paper_trade else 0.0,
+            "paper_equity_usdt": float((paper_stats or {}).get("equity_usdt", 0.0)),
         }
         self._buffer.append(event)
         self.events.append(event)
