@@ -89,3 +89,14 @@ v0.4.4 — Replay Timeline GUI / calibration presets.
 4. Click **APPLY CALIBRATION** to apply suggested thresholds to active detector profile.
 5. Active profile label switches to `CALIBRATED` (profile combo may remain unchanged).
 
+
+## v0.4.6 — Signal Quality Engine
+
+В v0.4.6 добавлен слой качества сигналов, чтобы поток raw `LONG_SIGNAL` превращался в ограниченный набор market events.
+
+- Введены grades: `A_PLUS`, `A`, `B`, `C`, `TRASH`.
+- Добавлен антиспам-кластеринг: один liquidity grab => один market event; дубликаты подавляются.
+- Добавлен signal decay по возрасту setup (`setup_age_ms`).
+- Добавлены reason codes и component-based quality score для объяснимости.
+- Raw `LONG_SIGNAL` больше не равен торговому сигналу: это только вход в pipeline качества.
+- Live trading по-прежнему запрещён: v0.4.6 не отправляет реальные ордера, не использует API keys и не делает position sizing.
