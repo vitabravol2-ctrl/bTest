@@ -52,7 +52,17 @@ DEBUG_ULTRA = ThresholdProfile(
     signal_min_score=55,
 )
 
-PROFILES = {profile.name: profile for profile in (CONSERVATIVE, BALANCED, SENSITIVE, DEBUG_ULTRA)}
+CUSTOM = ThresholdProfile(
+    name="CUSTOM",
+    min_grab_drop_pct=0.01,
+    min_reclaim_bounce_pct=0.005,
+    min_impulse_speed_pct_per_sec=0.001,
+    max_trend_drop_mid_pct=0.20,
+    max_slow_trend_drop_pct=0.35,
+    signal_min_score=55,
+)
+
+PROFILES = {profile.name: profile for profile in (CONSERVATIVE, BALANCED, SENSITIVE, DEBUG_ULTRA, CUSTOM)}
 
 
 def get_profile(profile_name: str, custom_profiles: dict[str, ThresholdProfile] | None = None) -> ThresholdProfile:

@@ -42,3 +42,16 @@ def test_recorder_saves_would_signal_fields(tmp_path):
     assert row["would_signal"] is True
     assert row["would_signal_reason"] == "WOULD_SIGNAL_BOUNCE"
     assert row["unlock_debug_active"] is True
+
+def test_recorder_saves_adaptive_hold_fields(tmp_path):
+    recorder = SignalRecorder(data_dir=tmp_path, max_buffer=1)
+    recorder.start_session()
+    tick = Dummy(ts_ms=1, mid=100.0, bid=99.9, ask=100.1)
+    metrics = Dummy(drop_pct=0.2, bounce_pct=0.01, impulse_speed_pct_per_sec=0.01, volatility_pct=0.001, spread_avg_pct=0.001)
+    signal = Dummy(phase="RECLAIM_WAIT", score=80.0, detected=False, reason_codes=["SWEEP_FOUND"], debug={}, adaptive_hold_active=True, base_hold_ms=1500, effective_hold_ms=500, hold_reduction_reason="score>=80")
+    profile = Dummy(name="TEST", min_grab_drop_pct=0.01, min_reclaim_bounce_pct=0.01, signal_min_score=50)
+    recorder.record_tick(tick, metrics, signal, "S", profile)
+    recorder.stop_session()
+    row = json.loads(recorder.session_path.read_text(encoding='utf-8').strip())
+    assert row["adaptive_hold_active"] is True
+    assert row["effective_hold_ms"] == 500

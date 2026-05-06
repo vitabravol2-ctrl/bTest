@@ -196,3 +196,9 @@ def test_report_contains_signal_unlock_analysis(tmp_path):
     analyzer = SessionAnalyzer(); analyzer.load(p); analyzer.analyze()
     assert "SIGNAL UNLOCK ANALYSIS" in analyzer.report_text
     assert analyzer.report_data["would_signal_count"] == 1
+
+def test_report_contains_adaptive_hold_analysis(tmp_path):
+    p = tmp_path / "session_adaptive_hold.jsonl"
+    write_jsonl(p, [{"score": 80, "detected": False, "would_signal": True, "phase": "RECLAIM_WAIT", "effective_hold_ms": 400, "base_hold_ms": 1500, "adaptive_hold_active": True, "debug": {"drop_ok": True, "bounce_ok": True, "speed_ok": True, "reclaim_ok": True, "hold_ok": False, "slow_trend_ok": True}}])
+    analyzer = SessionAnalyzer(); analyzer.load(p); analyzer.analyze()
+    assert "ADAPTIVE HOLD ANALYSIS" in analyzer.report_text

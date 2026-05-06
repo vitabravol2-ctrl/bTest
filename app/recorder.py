@@ -73,6 +73,10 @@ class SignalRecorder:
             "unlock_debug_active": bool(getattr(signal, "unlock_debug_active", False)),
             "unlock_blocker": str(getattr(signal, "unlock_blocker", "")),
             "unlock_reason": str(getattr(signal, "unlock_reason", "")),
+            "adaptive_hold_active": bool(getattr(signal, "adaptive_hold_active", False)),
+            "base_hold_ms": int(getattr(signal, "base_hold_ms", 0)),
+            "effective_hold_ms": int(getattr(signal, "effective_hold_ms", 0)),
+            "hold_reduction_reason": str(getattr(signal, "hold_reduction_reason", "")),
             "debug": dict(getattr(signal, "debug", {})),
             "profile_name": str(getattr(profile, "name", "CONSERVATIVE")),
             "thresholds": {
