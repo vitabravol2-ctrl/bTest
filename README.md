@@ -108,3 +108,11 @@ v0.4.4 — Replay Timeline GUI / calibration presets.
 - Добавлен offline post-signal analysis по session jsonl: 1s/3s/5s/10s return, max favorable/adverse за 10s, агрегация по grade.
 - Это по-прежнему аналитика (post-session), а не real paper/live execution.
 - Этап v0.5.0 остаётся следующим и не реализуется в этой версии.
+
+## v0.4.6.2 — Persist Post-Signal Metrics + Baseline Profile Simplification
+
+- Profile playground removed in favor of one stable `BASELINE` profile for comparable session statistics.
+- Analyzer now writes enriched copy of session JSONL (`*_enriched.jsonl`) with persisted post-signal metrics for each event.
+- This improves repeatability of research and prepares data interfaces for v0.5.0 Real Paper Trading Engine.
+- This release is **not live trading**: no real orders, no Binance keys, no position sizing, no risk execution.
+- Next stage (v0.5.0): integrate a dedicated Real Paper Trading Engine on top of enriched analytics.

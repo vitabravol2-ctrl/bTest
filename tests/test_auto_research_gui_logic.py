@@ -138,10 +138,10 @@ def test_no_trading_or_execution_added():
     assert "sell(" not in text.lower()
     assert "create_order" not in text.lower()
 
-def test_default_research_profile_is_custom():
+def test_default_research_profile_is_baseline():
     from app.profiles import PROFILES
-    custom = PROFILES["CUSTOM"]
-    assert custom.signal_min_score == 55
+    baseline = PROFILES["BASELINE"]
+    assert baseline.signal_min_score == 45
     defaults = {"signal_unlock_debug": 1.0, "unlock_p90_bounce_pct": 0.020, "adaptive_hold_enabled": 1.0}
     assert defaults["signal_unlock_debug"] == 1.0
 
