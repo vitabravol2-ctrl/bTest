@@ -26,3 +26,7 @@ class LiquidityGrabSignal:
     base_hold_ms: int = 0
     effective_hold_ms: int = 0
     hold_reduction_reason: str = ""
+    effective_bounce_threshold: float = 0.0
+    base_bounce_threshold: float = 0.0
+    reclaim_level_source: str = "base_bounce_threshold"
+    reclaim_distance_pct: float = 0.0

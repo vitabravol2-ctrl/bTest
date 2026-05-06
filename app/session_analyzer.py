@@ -196,6 +196,10 @@ class SessionAnalyzer:
 
         would_signal_reasons = Counter(str(e.get("would_signal_reason", "UNKNOWN")) for e in would_signals if e.get("would_signal_reason"))
         would_after_sweep = sum(1 for e in would_signals if "SWEEP_FOUND" in (e.get("reason_codes") or []))
+        effective_bounce_values = [float(e.get("effective_bounce_threshold", 0.0)) for e in self.events if float(e.get("effective_bounce_threshold", 0.0)) > 0.0]
+        reclaim_distance_values = [float(e.get("reclaim_distance_pct", 0.0)) for e in self.events]
+        would_signal_bounce_count = sum(1 for e in would_signals if str(e.get("would_signal_reason", "")) == "WOULD_SIGNAL_BOUNCE")
+        would_signal_hold_count = sum(1 for e in would_signals if str(e.get("would_signal_reason", "")) == "WOULD_SIGNAL_HOLD")
         total_events = len(self.events)
         data = {
             "total_events": total_events,
@@ -272,6 +276,28 @@ class SessionAnalyzer:
             "avg_would_signal_score": avg_would_score,
             "reclaim_success_before_would_signal": data["post_sweep_analysis"]["reclaim_success_rate"],
             "recommendation": recommendation,
+        }
+        bounce_blocker_count = int(fail_counts.get("bounce_ok", 0))
+        reclaim_blocker_count = int(fail_counts.get("reclaim_ok", 0))
+        bounce_recommendation = "READY_FOR_SIGNAL_QUALITY"
+        if bounce_blocker_count > reclaim_blocker_count and bounce_blocker_count > 0:
+            bounce_recommendation = "BOUNCE_TOO_STRICT"
+        elif reclaim_blocker_count > bounce_blocker_count and reclaim_blocker_count > 0:
+            bounce_recommendation = "RECLAIM_LEVEL_TOO_STRICT"
+        elif bounce_blocker_count == 0 and reclaim_blocker_count == 0:
+            bounce_recommendation = "BOUNCE_OK"
+        data["bounce_reclaim_alignment_analysis"] = {
+            "base_bounce_threshold": float((self.events[0] if self.events else {}).get("thresholds", {}).get("min_reclaim_bounce_pct", 0.0)),
+            "effective_bounce_threshold_median": float(median(effective_bounce_values)) if effective_bounce_values else 0.0,
+            "effective_bounce_threshold_p75": self._p75(effective_bounce_values) if effective_bounce_values else 0.0,
+            "reclaim_distance_median_pct": float(median(reclaim_distance_values)) if reclaim_distance_values else 0.0,
+            "reclaim_distance_p75_pct": self._p75(reclaim_distance_values) if reclaim_distance_values else 0.0,
+            "bounce_blocker_count": bounce_blocker_count,
+            "reclaim_blocker_count": reclaim_blocker_count,
+            "would_signal_bounce_count": would_signal_bounce_count,
+            "would_signal_hold_count": would_signal_hold_count,
+            "detected_count": detected_count,
+            "recommendation": bounce_recommendation,
         }
 
 
@@ -467,6 +493,8 @@ class SessionAnalyzer:
                 ]
             )
         lines.extend(["", "ADAPTIVE HOLD ANALYSIS", f"  detected_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('detected_count', 0)}", f"  would_signal_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('would_signal_count', 0)}", f"  hold_blocker_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('hold_blocker_count', 0)}", f"  effective_hold_median: {(data.get('adaptive_hold_analysis', {}) or {}).get('effective_hold_median', 0.0):.2f}", f"  effective_hold_p75: {(data.get('adaptive_hold_analysis', {}) or {}).get('effective_hold_p75', 0.0):.2f}", f"  adaptive_hold_active_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('adaptive_hold_active_count', 0)}", f"  detected_after_adaptive_hold: {(data.get('adaptive_hold_analysis', {}) or {}).get('detected_after_adaptive_hold', 0)}", f"  recommendation: {(data.get('adaptive_hold_analysis', {}) or {}).get('recommendation', 'NEED_MORE_DATA')}", "", "SIGNAL UNLOCK ANALYSIS", f"  would signals: {data.get('would_signal_count', 0)}", f"  would signals after sweep: {data.get('would_signal_after_sweep', 0)}", f"  would signal reasons: {data.get('would_signal_reasons', {})}", f"  would signal rate: {data.get('would_signal_rate', 0.0):.2f}%", f"  top unlock blockers: {(data.get('signal_unlock_analysis', {}) or {}).get('top_unlock_blockers', {})}", f"  avg would-signal score: {(data.get('signal_unlock_analysis', {}) or {}).get('avg_would_signal_score', 0.0):.2f}", f"  reclaim success before would-signal: {(data.get('signal_unlock_analysis', {}) or {}).get('reclaim_success_before_would_signal', 0.0):.2f}%", f"  recommendation: {(data.get('signal_unlock_analysis', {}) or {}).get('recommendation', 'STILL_NO_SIGNAL')}"])
+        ba = data.get("bounce_reclaim_alignment_analysis", {}) or {}
+        lines.extend(["", "BOUNCE / RECLAIM ALIGNMENT ANALYSIS", f"  base bounce threshold: {ba.get('base_bounce_threshold', 0.0):.5f}", f"  effective bounce threshold median/p75: {ba.get('effective_bounce_threshold_median', 0.0):.5f}/{ba.get('effective_bounce_threshold_p75', 0.0):.5f}", f"  reclaim distance median/p75: {ba.get('reclaim_distance_median_pct', 0.0):.5f}/{ba.get('reclaim_distance_p75_pct', 0.0):.5f}", f"  bounce blocker count: {ba.get('bounce_blocker_count', 0)}", f"  reclaim blocker count: {ba.get('reclaim_blocker_count', 0)}", f"  would_signal_bounce count: {ba.get('would_signal_bounce_count', 0)}", f"  would_signal_hold count: {ba.get('would_signal_hold_count', 0)}", f"  detected count: {ba.get('detected_count', 0)}", f"  recommendation: {ba.get('recommendation', 'READY_FOR_SIGNAL_QUALITY')}"])
         lines.extend(
             [
                 "",

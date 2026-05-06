@@ -202,3 +202,10 @@ def test_report_contains_adaptive_hold_analysis(tmp_path):
     write_jsonl(p, [{"score": 80, "detected": False, "would_signal": True, "phase": "RECLAIM_WAIT", "effective_hold_ms": 400, "base_hold_ms": 1500, "adaptive_hold_active": True, "debug": {"drop_ok": True, "bounce_ok": True, "speed_ok": True, "reclaim_ok": True, "hold_ok": False, "slow_trend_ok": True}}])
     analyzer = SessionAnalyzer(); analyzer.load(p); analyzer.analyze()
     assert "ADAPTIVE HOLD ANALYSIS" in analyzer.report_text
+
+
+def test_report_contains_bounce_reclaim_alignment_analysis(tmp_path):
+    p = tmp_path / "session_bounce_reclaim_alignment.jsonl"
+    write_jsonl(p, [{"score": 80, "detected": False, "would_signal": True, "would_signal_reason": "WOULD_SIGNAL_BOUNCE", "phase": "RECLAIM_WAIT", "effective_bounce_threshold": 0.003, "reclaim_distance_pct": 0.02, "thresholds": {"min_reclaim_bounce_pct": 0.01}, "debug": {"drop_ok": True, "bounce_ok": False, "speed_ok": True, "reclaim_ok": True, "hold_ok": False, "slow_trend_ok": True}}])
+    analyzer = SessionAnalyzer(); analyzer.load(p); analyzer.analyze()
+    assert "BOUNCE / RECLAIM ALIGNMENT ANALYSIS" in analyzer.report_text

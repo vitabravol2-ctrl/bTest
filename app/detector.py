@@ -123,7 +123,6 @@ class LiquidityGrabDetector:
             self._reclaim_since_ms = None
 
         reason_codes.append("SWEEP_FOUND")
-        self._reclaim_level = self._sweep_low * (1 + (self.profile.min_reclaim_bounce_pct / 100.0)) if self._sweep_low is not None else None
 
         if self._sweep_started_ms is not None and (now_ms - self._sweep_started_ms) > SETUP_MAX_AGE_MS:
             self.reset("SETUP_TOO_OLD")
@@ -132,11 +131,21 @@ class LiquidityGrabDetector:
 
         drop_speed = metrics_fast.drop_pct / (FAST_WINDOW_MS / 1000)
         speed_ok = drop_speed >= self.profile.min_impulse_speed_pct_per_sec
-        effective_bounce_threshold = self.profile.min_reclaim_bounce_pct
-        if self.signal_unlock_debug and self.unlock_p90_bounce_pct > 0:
-            effective_bounce_threshold = max(MIN_UNLOCK_BOUNCE_PCT, min(self.profile.min_reclaim_bounce_pct, self.unlock_p90_bounce_pct * 0.75))
+        base_bounce_threshold = self.profile.min_reclaim_bounce_pct
+        effective_bounce_threshold = base_bounce_threshold
+        reclaim_level_source = "base_bounce_threshold"
+        if self.signal_unlock_debug:
+            if self.unlock_p90_bounce_pct > 0:
+                effective_bounce_threshold = max(MIN_UNLOCK_BOUNCE_PCT, min(base_bounce_threshold, self.unlock_p90_bounce_pct * 0.75))
+                reclaim_level_source = "adaptive_unlock_p90_0.75"
+            else:
+                reclaim_level_source = "base_bounce_threshold_unlock_p90_zero"
+        self._reclaim_level = self._sweep_low * (1 + (effective_bounce_threshold / 100.0)) if self._sweep_low is not None else None
         bounce_ok = metrics_fast.bounce_pct >= effective_bounce_threshold
         reclaim_ok = price_for_reclaim is not None and self._reclaim_level is not None and price_for_reclaim >= self._reclaim_level
+        reclaim_distance_pct = 0.0
+        if price_for_reclaim is not None and self._reclaim_level is not None and self._reclaim_level != 0:
+            reclaim_distance_pct = ((price_for_reclaim - self._reclaim_level) / self._reclaim_level) * 100.0
 
         debug["speed_ok"] = speed_ok
         debug["bounce_ok"] = bounce_ok
@@ -160,7 +169,7 @@ class LiquidityGrabDetector:
                 unlock_blocker = "bounce_ok"
                 would_signal_reason = "WOULD_SIGNAL_BOUNCE"
                 unlock_reason = would_signal_reason
-            return self._build(False, score, reason_codes, "Bounce too small", now_ms, price_for_reclaim, debug, would_signal=would_signal, would_signal_reason=would_signal_reason, unlock_debug_active=self.signal_unlock_debug, unlock_blocker=unlock_blocker, unlock_reason=unlock_reason, adaptive_hold_active=adaptive_hold_active, base_hold_ms=base_hold_ms, effective_hold_ms=effective_hold_ms, hold_reduction_reason=hold_reason)
+            return self._build(False, score, reason_codes, "Bounce too small", now_ms, price_for_reclaim, debug, would_signal=would_signal, would_signal_reason=would_signal_reason, unlock_debug_active=self.signal_unlock_debug, unlock_blocker=unlock_blocker, unlock_reason=unlock_reason, adaptive_hold_active=adaptive_hold_active, base_hold_ms=base_hold_ms, effective_hold_ms=effective_hold_ms, hold_reduction_reason=hold_reason, effective_bounce_threshold=effective_bounce_threshold, base_bounce_threshold=base_bounce_threshold, reclaim_level_source=reclaim_level_source, reclaim_distance_pct=reclaim_distance_pct)
 
         if reclaim_ok:
             self._phase = "RECLAIM_WAIT"
@@ -204,7 +213,7 @@ class LiquidityGrabDetector:
         if score >= self.profile.signal_min_score and speed_ok and reclaim_ok and hold_ok:
             self._phase = "LONG_SIGNAL"
             reason_codes.append("LONG_SIGNAL_READY")
-            return self._build(True, score, reason_codes, "Liquidity grab LONG signal ready", now_ms, price_for_reclaim, debug, unlock_debug_active=self.signal_unlock_debug)
+            return self._build(True, score, reason_codes, "Liquidity grab LONG signal ready", now_ms, price_for_reclaim, debug, unlock_debug_active=self.signal_unlock_debug, effective_bounce_threshold=effective_bounce_threshold, base_bounce_threshold=base_bounce_threshold, reclaim_level_source=reclaim_level_source, reclaim_distance_pct=reclaim_distance_pct)
 
         would_signal = False
         would_signal_reason = ""
@@ -216,7 +225,7 @@ class LiquidityGrabDetector:
                 would_signal_reason = "WOULD_SIGNAL_BOUNCE" if fails[0] == "bounce_ok" else "WOULD_SIGNAL_HOLD"
                 unlock_reason = would_signal_reason
 
-        return self._build(False, score, reason_codes, "Reclaim in progress", now_ms, price_for_reclaim, debug, would_signal=would_signal, would_signal_reason=would_signal_reason, unlock_debug_active=self.signal_unlock_debug, unlock_blocker=unlock_blocker, unlock_reason=unlock_reason, adaptive_hold_active=adaptive_hold_active, base_hold_ms=base_hold_ms, effective_hold_ms=effective_hold_ms, hold_reduction_reason=hold_reason)
+        return self._build(False, score, reason_codes, "Reclaim in progress", now_ms, price_for_reclaim, debug, would_signal=would_signal, would_signal_reason=would_signal_reason, unlock_debug_active=self.signal_unlock_debug, unlock_blocker=unlock_blocker, unlock_reason=unlock_reason, adaptive_hold_active=adaptive_hold_active, base_hold_ms=base_hold_ms, effective_hold_ms=effective_hold_ms, hold_reduction_reason=hold_reason, effective_bounce_threshold=effective_bounce_threshold, base_bounce_threshold=base_bounce_threshold, reclaim_level_source=reclaim_level_source, reclaim_distance_pct=reclaim_distance_pct)
 
     def _score(self, metrics_fast: MarketMetrics, metrics_mid: MarketMetrics) -> float:
         drop_score = min(metrics_fast.drop_pct / self.profile.min_grab_drop_pct, 1.0) * 25.0
@@ -229,7 +238,7 @@ class LiquidityGrabDetector:
         trend_score = min(trend_ratio, 1.0) * 15.0
         return round(min(drop_score + bounce_score + speed_score + spread_score + trend_score, 100.0), 2)
 
-    def _build(self, detected: bool, score: float, reason_codes: list[str], reason: str, now_ms: int, trigger_price: float | None, debug: dict[str, bool], *, would_signal: bool = False, would_signal_reason: str = "", unlock_debug_active: bool = False, unlock_blocker: str = "", unlock_reason: str = "", adaptive_hold_active: bool = False, base_hold_ms: int = RECLAIM_HOLD_MS, effective_hold_ms: int = RECLAIM_HOLD_MS, hold_reduction_reason: str = "base") -> LiquidityGrabSignal:
+    def _build(self, detected: bool, score: float, reason_codes: list[str], reason: str, now_ms: int, trigger_price: float | None, debug: dict[str, bool], *, would_signal: bool = False, would_signal_reason: str = "", unlock_debug_active: bool = False, unlock_blocker: str = "", unlock_reason: str = "", adaptive_hold_active: bool = False, base_hold_ms: int = RECLAIM_HOLD_MS, effective_hold_ms: int = RECLAIM_HOLD_MS, hold_reduction_reason: str = "base", effective_bounce_threshold: float = 0.0, base_bounce_threshold: float = 0.0, reclaim_level_source: str = "base_bounce_threshold", reclaim_distance_pct: float = 0.0) -> LiquidityGrabSignal:
         reclaim_hold_ms = (now_ms - self._reclaim_since_ms) if self._reclaim_since_ms is not None else 0
         setup_age_ms = (now_ms - self._sweep_started_ms) if self._sweep_started_ms is not None else 0
         return LiquidityGrabSignal(
@@ -256,4 +265,8 @@ class LiquidityGrabDetector:
             base_hold_ms=base_hold_ms,
             effective_hold_ms=effective_hold_ms,
             hold_reduction_reason=hold_reduction_reason,
+            effective_bounce_threshold=effective_bounce_threshold,
+            base_bounce_threshold=base_bounce_threshold,
+            reclaim_level_source=reclaim_level_source,
+            reclaim_distance_pct=reclaim_distance_pct,
         )
