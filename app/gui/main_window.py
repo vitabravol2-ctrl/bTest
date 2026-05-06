@@ -228,6 +228,7 @@ class MainWindow(QMainWindow):
         self.lbl_setup_age = self._make_value_label(12)
         self.lbl_reclaim_hold = self._make_value_label(12)
         self.lbl_last_invalid = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        self.debug_labels: dict[str, QLabel] = {}
 
         dg.addWidget(QLabel("PHASE"), 0, 0)
         dg.addWidget(self.lbl_det_phase, 0, 1)
@@ -245,6 +246,21 @@ class MainWindow(QMainWindow):
         dg.addWidget(self.lbl_reclaim_hold, 7, 1)
         dg.addWidget(QLabel("Last invalid"), 8, 0)
         dg.addWidget(self.lbl_last_invalid, 8, 1)
+        debug_items = [
+            ("DROP condition", "drop_ok"),
+            ("BOUNCE condition", "bounce_ok"),
+            ("SPEED condition", "speed_ok"),
+            ("RECLAIM condition", "reclaim_ok"),
+            ("HOLD condition", "hold_ok"),
+            ("TREND condition", "slow_trend_ok"),
+        ]
+        row_i = 9
+        for title, key in debug_items:
+            lbl = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+            self.debug_labels[key] = lbl
+            dg.addWidget(QLabel(title), row_i, 0)
+            dg.addWidget(lbl, row_i, 1)
+            row_i += 1
 
         analyzer_card, ag = self._make_card("ANALYZER")
         analyzer_card.setMinimumWidth(340)
@@ -338,6 +354,12 @@ class MainWindow(QMainWindow):
     def append_log(self, message: str) -> None:
         self.log_view.append(message)
 
+    def _set_debug_label(self, label: QLabel, name: str, ok: bool, blocked: bool) -> None:
+        color = "#32d296" if ok else "#ef4444"
+        weight = "700" if blocked else "500"
+        label.setText(f"{name}: ● {'OK' if ok else 'FAIL'}")
+        label.setStyleSheet(f"color:{color};font-weight:{weight};")
+
     def on_status(self, status: str) -> None:
         status_map = {"CONNECTED": "green", "DISCONNECTED": "off", "STALE": "orange"}
         self._set_led(self.led_ws, status_map.get(status, "off"))
@@ -391,6 +413,28 @@ class MainWindow(QMainWindow):
         self.lbl_setup_age.setText(f"{signal.setup_age_ms} ms")
         self.lbl_reclaim_hold.setText(f"{signal.reclaim_hold_ms} ms")
         self.lbl_last_invalid.setText(signal.last_invalid_reason)
+        debug = signal.debug or {}
+        flag_to_name = {
+            "drop_ok": "DROP",
+            "bounce_ok": "BOUNCE",
+            "speed_ok": "SPEED",
+            "reclaim_ok": "RECLAIM",
+            "hold_ok": "HOLD",
+            "slow_trend_ok": "TREND",
+        }
+        blocker: str | None = None
+        if not signal.detected:
+            for flag in ("drop_ok", "bounce_ok", "speed_ok", "reclaim_ok", "hold_ok", "slow_trend_ok"):
+                if not bool(debug.get(flag, False)):
+                    blocker = flag
+                    break
+        for flag, name in flag_to_name.items():
+            self._set_debug_label(
+                self.debug_labels[flag],
+                name,
+                bool(debug.get(flag, False)),
+                blocked=(flag == blocker),
+            )
 
         self.lbl_state.setText(result.state)
         self.lbl_signal.setText("LONG READY" if result.signal == "LONG_SIGNAL" else "OFF")
@@ -432,6 +476,20 @@ class MainWindow(QMainWindow):
             )
             if "LONG_SIGNAL_READY" in signal.reason_codes:
                 self.logger.warning("LIQUIDITY GRAB LONG SIGNAL READY")
+            elif signal.score > 50 and not signal.detected:
+                blocked_name = "-"
+                for flag, name in (
+                    ("drop_ok", "DROP"),
+                    ("bounce_ok", "BOUNCE"),
+                    ("speed_ok", "SPEED"),
+                    ("reclaim_ok", "RECLAIM"),
+                    ("hold_ok", "HOLD"),
+                    ("slow_trend_ok", "TREND"),
+                ):
+                    if not bool((signal.debug or {}).get(flag, False)):
+                        blocked_name = name
+                        break
+                self.logger.warning("NEAR SIGNAL but blocked by: %s", blocked_name)
 
     def refresh_age(self) -> None:
         now = int(time.time() * 1000)
