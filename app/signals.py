@@ -16,3 +16,4 @@ class LiquidityGrabSignal:
     setup_age_ms: int = 0
     reclaim_hold_ms: int = 0
     last_invalid_reason: str = "-"
+    debug: dict[str, bool] = field(default_factory=dict)

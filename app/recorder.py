@@ -64,6 +64,7 @@ class SignalRecorder:
             "fsm_state": fsm_state,
             "reason_codes": list(getattr(signal, "reason_codes", [])),
             "detected": bool(getattr(signal, "detected", False)),
+            "debug": dict(getattr(signal, "debug", {})),
         }
         self._buffer.append(event)
 
