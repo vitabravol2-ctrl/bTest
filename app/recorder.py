@@ -44,7 +44,7 @@ class SignalRecorder:
         self.flush_to_file()
         self._active = False
 
-    def record_tick(self, tick, metrics, signal, fsm_state: str) -> None:
+    def record_tick(self, tick, metrics, signal, fsm_state: str, profile=None) -> None:
         if not self._active:
             return
 
@@ -65,6 +65,12 @@ class SignalRecorder:
             "reason_codes": list(getattr(signal, "reason_codes", [])),
             "detected": bool(getattr(signal, "detected", False)),
             "debug": dict(getattr(signal, "debug", {})),
+            "profile_name": str(getattr(profile, "name", "CONSERVATIVE")),
+            "thresholds": {
+                "min_grab_drop_pct": float(getattr(profile, "min_grab_drop_pct", 0.08)),
+                "min_reclaim_bounce_pct": float(getattr(profile, "min_reclaim_bounce_pct", 0.04)),
+                "signal_min_score": float(getattr(profile, "signal_min_score", 70.0)),
+            },
         }
         self._buffer.append(event)
 

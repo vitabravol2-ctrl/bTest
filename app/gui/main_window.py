@@ -4,6 +4,7 @@ import time
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -38,6 +39,7 @@ from app.market_ws import MarketWSClient
 from app.recorder import SignalRecorder
 from app.replay import ReplayEngine
 from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
+from app.profiles import PROFILES
 
 
 class MainWindow(QMainWindow):
@@ -76,6 +78,22 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_age)
         self.timer.start(500)
+        self.on_profile_changed("CONSERVATIVE")
+
+    def on_profile_changed(self, profile_name: str) -> None:
+        profile = PROFILES[profile_name]
+        self.detector.set_profile(profile)
+        self.lbl_profile.setText(profile.name)
+        self.lbl_drop_threshold.setText(f"{profile.min_grab_drop_pct:.3f}")
+        self.lbl_bounce_threshold.setText(f"{profile.min_reclaim_bounce_pct:.3f}")
+        self.lbl_score_threshold.setText(f"{profile.signal_min_score:.0f}")
+        self.logger.info(
+            "Profile changed: %s drop=%.2f bounce=%.2f score=%.0f",
+            profile.name,
+            profile.min_grab_drop_pct,
+            profile.min_reclaim_bounce_pct,
+            profile.signal_min_score,
+        )
 
     def _make_card(self, title: str) -> tuple[QFrame, QGridLayout]:
         card = QFrame()
@@ -162,6 +180,11 @@ class MainWindow(QMainWindow):
             top.addWidget(row)
 
         top.addStretch(1)
+        self.profile_combo = QComboBox()
+        self.profile_combo.addItems(["CONSERVATIVE", "BALANCED", "SENSITIVE", "DEBUG_ULTRA"])
+        self.profile_combo.currentTextChanged.connect(self.on_profile_changed)
+        top.addWidget(QLabel("Profile"))
+        top.addWidget(self.profile_combo)
 
         self.btn_connect = QPushButton("CONNECT")
         self.btn_disconnect = QPushButton("DISCONNECT")
@@ -228,6 +251,10 @@ class MainWindow(QMainWindow):
         self.lbl_setup_age = self._make_value_label(12)
         self.lbl_reclaim_hold = self._make_value_label(12)
         self.lbl_last_invalid = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_profile = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_drop_threshold = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_bounce_threshold = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_score_threshold = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
         self.debug_labels: dict[str, QLabel] = {}
 
         dg.addWidget(QLabel("PHASE"), 0, 0)
@@ -246,6 +273,14 @@ class MainWindow(QMainWindow):
         dg.addWidget(self.lbl_reclaim_hold, 7, 1)
         dg.addWidget(QLabel("Last invalid"), 8, 0)
         dg.addWidget(self.lbl_last_invalid, 8, 1)
+        dg.addWidget(QLabel("Active profile"), 9, 0)
+        dg.addWidget(self.lbl_profile, 9, 1)
+        dg.addWidget(QLabel("Drop threshold"), 10, 0)
+        dg.addWidget(self.lbl_drop_threshold, 10, 1)
+        dg.addWidget(QLabel("Bounce threshold"), 11, 0)
+        dg.addWidget(self.lbl_bounce_threshold, 11, 1)
+        dg.addWidget(QLabel("Score threshold"), 12, 0)
+        dg.addWidget(self.lbl_score_threshold, 12, 1)
         debug_items = [
             ("DROP condition", "drop_ok"),
             ("BOUNCE condition", "bounce_ok"),
@@ -254,7 +289,7 @@ class MainWindow(QMainWindow):
             ("HOLD condition", "hold_ok"),
             ("TREND condition", "slow_trend_ok"),
         ]
-        row_i = 9
+        row_i = 13
         for title, key in debug_items:
             lbl = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
             self.debug_labels[key] = lbl
@@ -394,7 +429,7 @@ class MainWindow(QMainWindow):
         fast_metrics = m["fast"]
         signal = self.detector.detect(m["fast"], m["mid"], m["slow"], self.buffer)
         result = self.fsm.evaluate(signal)
-        self.recorder.record_tick(tick, fast_metrics, signal, result.state)
+        self.recorder.record_tick(tick, fast_metrics, signal, result.state, self.detector.profile)
 
         self.lbl_fast_drop.setText(f"{fast_metrics.drop_pct:.5f}")
         self.lbl_fast_bounce.setText(f"{fast_metrics.bounce_pct:.5f}")
