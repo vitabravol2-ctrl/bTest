@@ -85,7 +85,7 @@ class SignalRecorder:
             "bounce_gap_pct": float(getattr(signal, "bounce_gap_pct", 0.0)),
             "bounce_ok_effective": bool(getattr(signal, "bounce_ok_effective", False)),
             "debug": dict(getattr(signal, "debug", {})),
-            "profile_name": str(getattr(profile, "name", "CONSERVATIVE")),
+            "profile_name": str(getattr(profile, "name", "BASELINE")),
             "thresholds": {
                 "min_grab_drop_pct": float(getattr(profile, "min_grab_drop_pct", 0.08)),
                 "min_reclaim_bounce_pct": float(getattr(profile, "min_reclaim_bounce_pct", 0.04)),

@@ -53,9 +53,7 @@ from app.signal_quality import SignalQualityEngine
 from app.paper_simulator import PaperSimulator
 from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
 from app.calibration import CalibrationSuggestion
-from app.profiles import PROFILES
-from app.profiles import ThresholdProfile
-from app.profiles import CUSTOM, CUSTOM_EXTREME_RESEARCH
+from app.profiles import BASELINE, PROFILES, ThresholdProfile, get_profile
 from app.research_pipeline import AutoResearchPipeline
 
 class MainWindow(QMainWindow):
@@ -87,7 +85,7 @@ class MainWindow(QMainWindow):
         self.research_pipeline = AutoResearchPipeline()
         self.auto_research_active = False
         self.auto_research_started_ms = 0
-        self._selected_profile_name = "CUSTOM"
+        self._selected_profile_name = "BASELINE"
         self.custom_runtime_params: dict[str, float] = {"signal_unlock_debug": 1.0, "unlock_p90_bounce_pct": 0.020, "adaptive_hold_enabled": 1.0}
 
         self.ws = MarketWSClient(self.logger)
@@ -102,12 +100,12 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_age)
         self.timer.start(500)
-        self.profile_combo.setCurrentText("CUSTOM")
-        self.on_profile_changed("CUSTOM")
+        self.profile_combo.setCurrentText("BASELINE")
+        self.on_profile_changed("BASELINE")
 
     def on_profile_changed(self, profile_name: str) -> None:
         self._selected_profile_name = profile_name
-        profile = PROFILES[profile_name]
+        profile = get_profile(profile_name)
         self._apply_profile(profile)
         self.logger.info(
             "Profile changed: %s drop=%.2f bounce=%.2f score=%.0f",
@@ -212,7 +210,8 @@ class MainWindow(QMainWindow):
 
         top.addStretch(1)
         self.profile_combo = QComboBox()
-        self.profile_combo.addItems(["CUSTOM", "CUSTOM_EXTREME_RESEARCH", "CONSERVATIVE", "BALANCED", "SENSITIVE", "DEBUG_ULTRA"])
+        self.profile_combo.addItems(["BASELINE"])
+        self.profile_combo.setEnabled(False)
         self.profile_combo.currentTextChanged.connect(self.on_profile_changed)
         top.addWidget(QLabel("Profile"))
         top.addWidget(self.profile_combo)
@@ -868,7 +867,7 @@ class MainWindow(QMainWindow):
         profile = self.last_calibration_suggestion.to_profile()
         self._apply_profile(profile)
         self.logger.info(
-            "Applied CALIBRATED profile: drop=%.5f bounce=%.5f speed=%.5f score=%.0f",
+            "Applied BASELINE + calibrated thresholds: drop=%.5f bounce=%.5f speed=%.5f score=%.0f",
             profile.min_grab_drop_pct,
             profile.min_reclaim_bounce_pct,
             profile.min_impulse_speed_pct_per_sec,
@@ -912,9 +911,9 @@ class MainWindow(QMainWindow):
             fields[key] = spin
         layout.addLayout(form)
         btn_apply = QPushButton("Apply to current session")
-        btn_save_custom = QPushButton("Save as CUSTOM")
+        btn_save_custom = QPushButton("Save baseline runtime")
         btn_reset = QPushButton("Reset to selected profile")
-        btn_extreme = QPushButton("Extreme Research Defaults")
+        btn_extreme = QPushButton("Baseline Defaults")
         btn_close = QPushButton("Close")
         row = QHBoxLayout()
         for btn in (btn_apply, btn_save_custom, btn_reset, btn_extreme, btn_close):
@@ -938,13 +937,13 @@ class MainWindow(QMainWindow):
             self.logger.info("Profile settings applied (%s): %s", name, {k: float(v.value()) for k, v in fields.items()})
 
         def _reset() -> None:
-            selected = PROFILES.get(self._selected_profile_name, PROFILES["CONSERVATIVE"])
+            selected = PROFILES.get(self._selected_profile_name, BASELINE)
             for key in fields:
                 fields[key].setValue(float(getattr(selected, key)))
             self.logger.info("Profile settings reset to selected profile: %s", selected.name)
 
-        btn_apply.clicked.connect(lambda: _apply("CUSTOM"))
-        btn_save_custom.clicked.connect(lambda: _apply("CUSTOM"))
+        btn_apply.clicked.connect(lambda: _apply("BASELINE_CALIBRATED"))
+        btn_save_custom.clicked.connect(lambda: _apply("BASELINE_CALIBRATED"))
         btn_reset.clicked.connect(_reset)
 
         def _extreme_defaults() -> None:
@@ -954,8 +953,8 @@ class MainWindow(QMainWindow):
                     fields[k].setValue(v)
             chk_unlock.setChecked(True); chk_adaptive_hold.setChecked(True); chk_paper_sim.setChecked(True)
             self.paper_simulator.enabled = True
-            self.append_log("EXTREME RESEARCH — may create noisy paper signals, no live trading.")
-            _apply("CUSTOM_EXTREME_RESEARCH")
+            self.append_log("BASELINE calibration defaults applied (research mode, no live trading).")
+            _apply("BASELINE_CALIBRATED")
 
         btn_extreme.clicked.connect(_extreme_defaults)
         btn_close.clicked.connect(dialog.close)

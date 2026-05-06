@@ -72,6 +72,12 @@ class SessionAnalyzer:
         except (TypeError, ValueError):
             return 0
 
+
+    def _enriched_path(self) -> Path:
+        if self.path is None:
+            return Path("session_enriched.jsonl")
+        return self.path.with_name(f"{self.path.stem}_enriched.jsonl")
+
     def suggest_profile(self) -> dict[str, Any]:
         if not self.report_data:
             self.analyze()
@@ -250,12 +256,28 @@ class SessionAnalyzer:
 
         rows_with_prices = [(idx, e, self._event_ts_ms(e), self._event_price(e)) for idx, e in enumerate(self.events)]
         signal_perf_rows = []
+        enriched_events = []
+        post_signal_calculated_count = 0
+        post_signal_missing_price_count = 0
+        post_signal_insufficient_future_data_count = 0
         for idx, e, ts_ms, signal_price in rows_with_prices:
-            grade = str(e.get("signal_quality_grade", e.get("signal_grade", "")))
-            if not (bool(e.get("is_new_market_event", False)) and bool(e.get("detected", False)) and grade in GRADES and grade != "TRASH"):
+            enriched = dict(e)
+            for k in ("post_1s_return_pct", "post_3s_return_pct", "post_5s_return_pct", "post_10s_return_pct", "max_favorable_10s_pct", "max_adverse_10s_pct"):
+                enriched[k] = 0.0
+            enriched["post_signal_calculated"] = False
+            enriched["post_signal_reference_price"] = 0.0
+            enriched["post_signal_reference_ts_ms"] = 0
+            if not bool(e.get("is_new_market_event", False)):
+                enriched_events.append(enriched)
                 continue
             if signal_price <= 0 or ts_ms <= 0:
+                post_signal_missing_price_count += 1
+                enriched_events.append(enriched)
                 continue
+            post_signal_calculated_count += 1
+            enriched["post_signal_calculated"] = True
+            enriched["post_signal_reference_price"] = signal_price
+            enriched["post_signal_reference_ts_ms"] = ts_ms
             future_returns = {}
             window_prices = []
             for _, _, fts_ms, fpx in rows_with_prices[idx+1:]:
@@ -266,14 +288,32 @@ class SessionAnalyzer:
                     continue
                 if dt <= 10000:
                     window_prices.append(fpx)
-                for h in (1000,3000,5000,10000):
+                for h in (1000, 3000, 5000, 10000):
                     if h not in future_returns and dt >= h:
                         future_returns[h] = (fpx - signal_price) / signal_price * 100.0
-                if dt > 10000 and len(future_returns)==4:
+                if dt > 10000 and len(future_returns) == 4:
                     break
+            if len(future_returns) < 4:
+                post_signal_insufficient_future_data_count += 1
             if not window_prices:
-                window_prices=[signal_price]
-            signal_perf_rows.append({"grade":grade,"post_1s_return_pct":future_returns.get(1000,0.0),"post_3s_return_pct":future_returns.get(3000,0.0),"post_5s_return_pct":future_returns.get(5000,0.0),"post_10s_return_pct":future_returns.get(10000,0.0),"max_favorable_10s_pct":(max(window_prices)-signal_price)/signal_price*100.0,"max_adverse_10s_pct":(min(window_prices)-signal_price)/signal_price*100.0})
+                window_prices = [signal_price]
+            enriched["post_1s_return_pct"] = future_returns.get(1000, 0.0)
+            enriched["post_3s_return_pct"] = future_returns.get(3000, 0.0)
+            enriched["post_5s_return_pct"] = future_returns.get(5000, 0.0)
+            enriched["post_10s_return_pct"] = future_returns.get(10000, 0.0)
+            enriched["max_favorable_10s_pct"] = (max(window_prices) - signal_price) / signal_price * 100.0
+            enriched["max_adverse_10s_pct"] = (min(window_prices) - signal_price) / signal_price * 100.0
+            grade = str(e.get("signal_quality_grade", e.get("signal_grade", "")))
+            if bool(e.get("detected", False)) and grade in GRADES and grade != "TRASH":
+                signal_perf_rows.append({"grade": grade, "post_1s_return_pct": enriched["post_1s_return_pct"], "post_3s_return_pct": enriched["post_3s_return_pct"], "post_5s_return_pct": enriched["post_5s_return_pct"], "post_10s_return_pct": enriched["post_10s_return_pct"], "max_favorable_10s_pct": enriched["max_favorable_10s_pct"], "max_adverse_10s_pct": enriched["max_adverse_10s_pct"]})
+            enriched_events.append(enriched)
+
+        enriched_session_path = self._enriched_path()
+        if self.path is not None:
+            enriched_session_path.parent.mkdir(parents=True, exist_ok=True)
+            with enriched_session_path.open("w", encoding="utf-8") as outf:
+                for row in enriched_events:
+                    outf.write(json.dumps(row, ensure_ascii=False) + "\n")
 
         post_perf = {}
         for grade in GRADES:
@@ -316,6 +356,10 @@ class SessionAnalyzer:
                 "pass_drop_bounce_reclaim": pass_drop_bounce_reclaim,
                 "pass_hold_ok": pass_hold,
             },
+            "enriched_session_path": str(enriched_session_path),
+            "post_signal_calculated_count": post_signal_calculated_count,
+            "post_signal_missing_price_count": post_signal_missing_price_count,
+            "post_signal_insufficient_future_data_count": post_signal_insufficient_future_data_count,
             "post_sweep_analysis": {
                 "sweep_ticks": len(sweep_events),
                 "unique_sweeps": unique_sweeps_count,
@@ -601,7 +645,7 @@ class SessionAnalyzer:
         hints = data["threshold_hints"]
         post = data.get("post_sweep_analysis", {})
         reclaim_hints = data.get("reclaim_hints", {})
-        lines.extend(["", "Threshold hints:", f"  max_drop_pct: {hints['max_drop_pct']:.5f}", f"  p90_drop_pct: {hints['p90_drop_pct']:.5f}", f"  p95_drop_pct: {hints['p95_drop_pct']:.5f}", f"  max_bounce_pct: {hints['max_bounce_pct']:.5f}", f"  p90_bounce_pct: {hints['p90_bounce_pct']:.5f}", f"  p95_bounce_pct: {hints['p95_bounce_pct']:.5f}", f"  near_signal_bounce_p75: {hints['near_signal_bounce_p75']:.5f}", f"  near_signal_bounce_median: {hints['near_signal_bounce_median']:.5f}", f"  max_speed: {hints['max_speed']:.5f}", f"  p95_speed: {hints['p95_speed']:.5f}", f"  p75_abs_speed: {hints['p75_abs_speed']:.5f}", f"  pass_drop_ok: {hints['pass_drop_ok']}", f"  pass_drop_bounce: {hints['pass_drop_bounce']}", f"  pass_drop_bounce_reclaim: {hints['pass_drop_bounce_reclaim']}", f"  pass_hold_ok: {hints['pass_hold_ok']}"])
+        lines.extend(["", "Post Signal Persistence:", f"  enriched path: {data.get('enriched_session_path', '-')}", f"  calculated events: {data.get('post_signal_calculated_count', 0)}", f"  missing price: {data.get('post_signal_missing_price_count', 0)}", f"  insufficient future data: {data.get('post_signal_insufficient_future_data_count', 0)}", "", "Threshold hints:", f"  max_drop_pct: {hints['max_drop_pct']:.5f}", f"  p90_drop_pct: {hints['p90_drop_pct']:.5f}", f"  p95_drop_pct: {hints['p95_drop_pct']:.5f}", f"  max_bounce_pct: {hints['max_bounce_pct']:.5f}", f"  p90_bounce_pct: {hints['p90_bounce_pct']:.5f}", f"  p95_bounce_pct: {hints['p95_bounce_pct']:.5f}", f"  near_signal_bounce_p75: {hints['near_signal_bounce_p75']:.5f}", f"  near_signal_bounce_median: {hints['near_signal_bounce_median']:.5f}", f"  max_speed: {hints['max_speed']:.5f}", f"  p95_speed: {hints['p95_speed']:.5f}", f"  p75_abs_speed: {hints['p75_abs_speed']:.5f}", f"  pass_drop_ok: {hints['pass_drop_ok']}", f"  pass_drop_bounce: {hints['pass_drop_bounce']}", f"  pass_drop_bounce_reclaim: {hints['pass_drop_bounce_reclaim']}", f"  pass_hold_ok: {hints['pass_hold_ok']}"])
 
         suggested = data.get("suggested_profile") or self.suggest_profile()
         lines.extend(["", "=== SUGGESTED CALIBRATED PROFILE ===", f"Suggested drop={suggested['min_grab_drop_pct']:.3f}", f"Suggested bounce={suggested['min_reclaim_bounce_pct']:.3f}", f"Suggested speed={suggested['min_impulse_speed_pct_per_sec']:.3f}", f"Suggested score={suggested['signal_min_score']:.0f}", f"source p90 drop={hints['p90_drop_pct']:.5f}", f"source p95 drop={hints['p95_drop_pct']:.5f}", f"source p90 bounce={hints['p90_bounce_pct']:.5f}", f"source p95 bounce={hints['p95_bounce_pct']:.5f}", f"source near median bounce={hints['near_signal_bounce_median']:.5f}", f"source p75 abs speed={hints['p75_abs_speed']:.5f}", "Reasons:"])
