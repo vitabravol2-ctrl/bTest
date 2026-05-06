@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QLineEdit,
 )
 
 from app.analyzer import AnalyzerConfig, DataAnalyzer
@@ -55,6 +56,9 @@ from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
 from app.calibration import CalibrationSuggestion
 from app.profiles import BASELINE, PROFILES, ThresholdProfile, get_profile
 from app.research_pipeline import AutoResearchPipeline
+from app.binance_settings import BinanceSettings, load_settings, save_settings
+from app.binance_client import BinanceClient
+from app.binance_filters import validate_market_buy_quote
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -73,6 +77,9 @@ class MainWindow(QMainWindow):
         self.replay = ReplayEngine()
         self.signal_quality = SignalQualityEngine(signal_min_score=self.detector.profile.signal_min_score)
         self.paper_simulator = PaperSimulator()
+        self.binance_settings = load_settings()
+        self.binance_client = BinanceClient(self.binance_settings)
+        self.last_binance_filters = []
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
@@ -96,12 +103,21 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_styles()
         self.on_status("DISCONNECTED")
+        self._hydrate_binance_ui()
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_age)
         self.timer.start(500)
         self.profile_combo.setCurrentText("BASELINE")
         self.on_profile_changed("BASELINE")
+
+    def _hydrate_binance_ui(self) -> None:
+        self.edit_api_key.setText(self.binance_settings.api_key)
+        self.edit_api_secret.setText(self.binance_settings.api_secret)
+        self.chk_testnet.setChecked(self.binance_settings.use_testnet)
+        self.spin_budget.setValue(float(self.binance_settings.quote_budget_usdt))
+        self.spin_min_trade.setValue(float(self.binance_settings.min_trade_usdt))
+        self.chk_live.setChecked(self.binance_settings.live_enabled)
 
     def on_profile_changed(self, profile_name: str) -> None:
         self._selected_profile_name = profile_name
@@ -466,6 +482,42 @@ class MainWindow(QMainWindow):
         body.addWidget(market_card)
         body.addWidget(radar_card, 1)
         body.addWidget(analyzer_card)
+
+        binance_card, bg = self._make_card("BINANCE")
+        self.edit_api_key = QLineEdit(); self.edit_api_key.setPlaceholderText("API Key")
+        self.edit_api_secret = QLineEdit(); self.edit_api_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        self.chk_testnet = QCheckBox("Use Testnet"); self.chk_testnet.setChecked(True)
+        self.spin_budget = QDoubleSpinBox(); self.spin_budget.setRange(0.0, 1_000_000.0); self.spin_budget.setValue(25.0)
+        self.spin_min_trade = QDoubleSpinBox(); self.spin_min_trade.setRange(0.0, 1_000_000.0); self.spin_min_trade.setValue(10.0)
+        self.chk_live = QCheckBox("LIVE ENABLE")
+        self.edit_confirm = QLineEdit(); self.edit_confirm.setPlaceholderText("Type BUY")
+        self.btn_save_keys = QPushButton("Save keys")
+        self.btn_test_conn = QPushButton("Test connection")
+        self.btn_load_bal = QPushButton("Load balances")
+        self.btn_load_filters = QPushButton("Load filters")
+        self.btn_validate_order = QPushButton("Validate order")
+        self.btn_test_order = QPushButton("Send TEST ORDER")
+        self.btn_manual_buy = QPushButton("MANUAL BUY")
+        self.btn_manual_buy.setEnabled(False)
+        self.btn_save_keys.clicked.connect(self._save_binance_settings)
+        self.btn_test_conn.clicked.connect(self._test_binance_connection)
+        self.btn_load_bal.clicked.connect(self._load_binance_balances)
+        self.btn_load_filters.clicked.connect(self._load_binance_filters)
+        self.btn_validate_order.clicked.connect(self._validate_binance_order)
+        self.btn_test_order.clicked.connect(self._send_binance_test_order)
+        self.btn_manual_buy.clicked.connect(self._manual_live_buy)
+        bg.addWidget(QLabel("API Key"), 0, 0); bg.addWidget(self.edit_api_key, 0, 1)
+        bg.addWidget(QLabel("API Secret"), 1, 0); bg.addWidget(self.edit_api_secret, 1, 1)
+        bg.addWidget(self.chk_testnet, 2, 0, 1, 2)
+        bg.addWidget(QLabel("Budget USDT"), 3, 0); bg.addWidget(self.spin_budget, 3, 1)
+        bg.addWidget(QLabel("Min trade USDT"), 4, 0); bg.addWidget(self.spin_min_trade, 4, 1)
+        bg.addWidget(self.chk_live, 5, 0, 1, 2)
+        bg.addWidget(self.edit_confirm, 6, 0, 1, 2)
+        bg.addWidget(self.btn_save_keys, 7, 0); bg.addWidget(self.btn_test_conn, 7, 1)
+        bg.addWidget(self.btn_load_bal, 8, 0); bg.addWidget(self.btn_load_filters, 8, 1)
+        bg.addWidget(self.btn_validate_order, 9, 0); bg.addWidget(self.btn_test_order, 9, 1)
+        bg.addWidget(self.btn_manual_buy, 10, 0, 1, 2)
+        body.addWidget(binance_card)
         layout.addLayout(body, 1)
         layout.addWidget(self.log_view)
 
@@ -785,6 +837,46 @@ class MainWindow(QMainWindow):
         self.lbl_research_blocker.setText(p.top_blocker)
         self.lbl_research_action.setText(p.suggested_action)
         self.lbl_research_conf.setText(p.confidence)
+
+    def _save_binance_settings(self) -> None:
+        self.binance_settings.api_key = self.edit_api_key.text().strip()
+        self.binance_settings.api_secret = self.edit_api_secret.text().strip()
+        self.binance_settings.use_testnet = self.chk_testnet.isChecked()
+        self.binance_settings.quote_budget_usdt = float(self.spin_budget.value())
+        self.binance_settings.min_trade_usdt = float(self.spin_min_trade.value())
+        self.binance_settings.live_enabled = self.chk_live.isChecked()
+        save_settings(self.binance_settings)
+        self.binance_client = BinanceClient(self.binance_settings)
+        self.logger.info("Binance settings saved. key=%s testnet=%s", self.binance_settings.masked_api_key(), self.binance_settings.use_testnet)
+
+    def _test_binance_connection(self) -> None:
+        self.logger.info("Binance ping=%s time=%s", self.binance_client.ping(), self.binance_client.server_time())
+
+    def _load_binance_balances(self) -> None:
+        account = self.binance_client.get_account()
+        balances = [b for b in account.get("balances", []) if b.get("asset") in {"USDT", "BTC"}]
+        self.logger.info("Binance balances loaded: %s", balances)
+
+    def _load_binance_filters(self) -> None:
+        self.last_binance_filters = self.binance_client.get_symbol_filters(self.binance_settings.symbol)
+        self.logger.info("Binance filters loaded for %s", self.binance_settings.symbol)
+
+    def _validate_binance_order(self) -> None:
+        check = validate_market_buy_quote(self.last_binance_filters, float(self.spin_budget.value()))
+        ok = check["ok"] and float(self.spin_budget.value()) >= float(self.spin_min_trade.value())
+        if ok and self.chk_live.isChecked() and self.edit_confirm.text().strip() == "BUY":
+            self.btn_manual_buy.setEnabled(True)
+        else:
+            self.btn_manual_buy.setEnabled(False)
+        self.logger.info("Order validate: %s", check)
+
+    def _send_binance_test_order(self) -> None:
+        r = self.binance_client.test_order_buy_market(self.binance_settings.symbol, float(self.spin_budget.value()))
+        self.logger.info("Binance test order result: %s", r)
+
+    def _manual_live_buy(self) -> None:
+        r = self.binance_client.live_order_buy_market(self.binance_settings.symbol, float(self.spin_budget.value()), manual_confirm=(self.edit_confirm.text().strip() == "BUY"))
+        self.logger.warning("Manual live BUY result: %s", r)
 
     def refresh_age(self) -> None:
         now = int(time.time() * 1000)

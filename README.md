@@ -124,3 +124,9 @@ v0.4.4 — Replay Timeline GUI / calibration presets.
 - Added `PaperEngine` skeleton (`app/paper_engine.py`) that only builds offline plan previews (no orders, no balances, no Binance integration).
 - Added SessionAnalyzer paper-plan preview and `paper_plan_*` fields in enriched JSONL.
 - This is **not** full paper trading v0.5.0; this is preparation for v0.5.0.
+
+## v0.5.0 Binance Readiness
+- Safe Binance bridge only (no auto-entry, no continuous live trading).
+- Local API key storage in `data/settings/binance_settings.json` (ignored by git).
+- Testnet/mainnet switch in GUI.
+- Order validation + test order workflow before any manual live action.

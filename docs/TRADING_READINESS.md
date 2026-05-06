@@ -41,3 +41,9 @@ Detector FSM
 - TP/SL execution
 - Binance filters
 - live gate
+
+## v0.5.0 Binance readiness (safe mode)
+- No auto trading.
+- Live BUY disabled by default.
+- Manual BUY only with explicit `BUY` confirmation.
+- Recommended first use: Binance testnet.
