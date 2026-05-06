@@ -14,6 +14,7 @@ class SignalRecorder:
         self.flush_interval_sec = flush_interval_sec
 
         self._buffer: list[dict[str, Any]] = []
+        self.events: list[dict[str, Any]] = []
         self._active = False
         self._session_path: Path | None = None
         self._last_flush_monotonic = 0.0
@@ -34,6 +35,7 @@ class SignalRecorder:
         self._session_path = self.data_dir / f"session_{timestamp}.jsonl"
         self._session_path.touch(exist_ok=True)
         self._buffer.clear()
+        self.events.clear()
         self._active = True
         self._last_flush_monotonic = time.monotonic()
         return self._session_path
@@ -73,6 +75,7 @@ class SignalRecorder:
             },
         }
         self._buffer.append(event)
+        self.events.append(event)
 
         now = time.monotonic()
         if len(self._buffer) >= self.max_buffer or now - self._last_flush_monotonic >= self.flush_interval_sec:

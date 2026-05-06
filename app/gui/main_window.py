@@ -165,6 +165,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
+        top_wrap = QVBoxLayout()
+        top_wrap.setSpacing(6)
         top = QHBoxLayout()
         self.lbl_title = QLabel("bTest Cockpit — BTCUSDT Liquidity Grab")
         self.lbl_title.setObjectName("appTitle")
@@ -202,9 +204,12 @@ class MainWindow(QMainWindow):
         self.btn_disconnect = QPushButton("DISCONNECT")
         self.btn_clear = QPushButton("CLEAR LOG")
         self.btn_load_replay = QPushButton("LOAD REPLAY")
-        self.btn_analyze_session = QPushButton("ANALYZE SESSION")
-        self.btn_apply_calibration = QPushButton("APPLY CALIBRATION")
-        self.btn_start_auto_research = QPushButton("START AUTO RESEARCH")
+        self.btn_analyze_session = QPushButton("ANALYZE")
+        self.btn_analyze_session.setToolTip("ANALYZE SESSION")
+        self.btn_apply_calibration = QPushButton("APPLY CAL")
+        self.btn_apply_calibration.setToolTip("APPLY CALIBRATION")
+        self.btn_start_auto_research = QPushButton("AUTO RESEARCH")
+        self.btn_start_auto_research.setToolTip("START AUTO RESEARCH")
         self.btn_connect.clicked.connect(lambda: asyncio.create_task(self.ws.connect()))
         self.btn_disconnect.clicked.connect(lambda: asyncio.create_task(self.ws.disconnect()))
         self.btn_clear.clicked.connect(self.log_view.clear)
@@ -212,11 +217,17 @@ class MainWindow(QMainWindow):
         self.btn_analyze_session.clicked.connect(self.analyze_session_file)
         self.btn_apply_calibration.clicked.connect(self.apply_calibration)
         self.btn_start_auto_research.clicked.connect(self.start_auto_research)
+        controls = QHBoxLayout()
+        controls.setSpacing(6)
         for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_analyze_session, self.btn_apply_calibration, self.btn_start_auto_research, self.btn_clear):
             btn.setMinimumHeight(34)
-            top.addWidget(btn)
+            btn.setMinimumWidth(104)
+            controls.addWidget(btn)
+        controls.addStretch(1)
 
-        layout.addLayout(top)
+        top_wrap.addLayout(top)
+        top_wrap.addLayout(controls)
+        layout.addLayout(top_wrap)
 
         body = QHBoxLayout()
         body.setSpacing(8)
@@ -576,12 +587,18 @@ class MainWindow(QMainWindow):
                 self.logger.warning("NEAR SIGNAL but blocked by: %s", blocked_name)
 
     def start_auto_research(self) -> None:
+        if self.recorder.is_recording:
+            self.recorder.stop_session()
+        self.recorder.events.clear()
+        new_session = self.recorder.start_session()
+        self.last_calibration_suggestion = None
+        self.research_pipeline.reset()
         self.auto_research_active = True
         self.auto_research_started_ms = int(time.time() * 1000)
         self.research_pipeline.start()
         self._render_research_progress()
         asyncio.create_task(self.ws.connect())
-        self.logger.info("Auto research pipeline started")
+        self.logger.info("Auto research pipeline started with clean session: %s", new_session)
 
     def _process_auto_research_tick(self, tick_ts_ms: int, signal) -> None:
         if not self.auto_research_active:
@@ -596,29 +613,54 @@ class MainWindow(QMainWindow):
             if not bool(debug.get(flag, False)):
                 blocker = flag
                 break
-        self.research_pipeline.set_collecting()
-        self.research_pipeline.set_warmup(ticks, elapsed)
-        self.research_pipeline.set_detecting(sweeps, near_signals, blocker)
+        self.research_pipeline.update_stage(
+            connected=True,
+            ticks_collected=ticks,
+            session_seconds=elapsed,
+            sweeps_found=sweeps,
+            near_signals_count=near_signals,
+            top_blocker=blocker,
+            min_research_ticks=MIN_RESEARCH_TICKS,
+            min_research_seconds=MIN_RESEARCH_SECONDS,
+            now_ms=tick_ts_ms,
+        )
         if elapsed >= MIN_RESEARCH_SECONDS and ticks >= MIN_RESEARCH_TICKS:
-            self.research_pipeline.set_analyzing()
-            analyzer = SessionAnalyzer()
-            analyzer.events = list(self.recorder.events)
-            data = analyzer.analyze()
-            self.research_pipeline.set_validating()
-            validation = analyzer.validate_calibration_before_after(
-                current_profile=self.detector.profile.__dict__,
-                suggested_profile=data["suggested_profile"],
-                min_research_ticks=MIN_RESEARCH_TICKS,
-                min_sweeps_for_confidence=MIN_SWEEPS_FOR_CONFIDENCE,
-                min_near_signals_for_confidence=MIN_NEAR_SIGNALS_FOR_CONFIDENCE,
-            )
-            self.research_pipeline.set_decision(
-                validation["recommendation"],
-                validation["confidence"],
-                validation["reason"],
-            )
-            self.research_pipeline.set_waiting_for_entry()
-            self.auto_research_active = False
+            try:
+                self.research_pipeline.set_analyzing()
+                analyzer = SessionAnalyzer()
+                analyzer.events = list(self.recorder.events)
+                data = analyzer.analyze(current_profile=self.detector.profile.__dict__)
+                self.research_pipeline.set_validating()
+                validation = analyzer.validate_calibration_before_after(
+                    current_profile=self.detector.profile.__dict__,
+                    suggested_profile=data["suggested_profile"],
+                    min_research_ticks=MIN_RESEARCH_TICKS,
+                    min_sweeps_for_confidence=MIN_SWEEPS_FOR_CONFIDENCE,
+                    min_near_signals_for_confidence=MIN_NEAR_SIGNALS_FOR_CONFIDENCE,
+                )
+                self.research_pipeline.set_decision(
+                    validation["recommendation"],
+                    validation["confidence"],
+                    validation["reason"],
+                )
+                self.research_pipeline.hold_decision(tick_ts_ms, min_show_ms=3000)
+                self.logger.info("AUTO RESEARCH SUMMARY")
+                self.logger.info("- session events: %s", data.get("total_events", 0))
+                self.logger.info("- sweeps: %s", sweeps)
+                self.logger.info("- near-signals: %s", data.get("near_signals_count", 0))
+                self.logger.info("- top blocker: %s", blocker)
+                self.logger.info("- recommendation: %s", validation.get("recommendation", "-"))
+                self.logger.info("- confidence: %s", validation.get("confidence", "-"))
+                self.logger.info("- reason: %s", validation.get("reason", "-"))
+                self.logger.info("- suggested drop/bounce/speed: %.5f / %.5f / %.5f", data["suggested_profile"]["min_grab_drop_pct"], data["suggested_profile"]["min_reclaim_bounce_pct"], data["suggested_profile"]["min_impulse_speed_pct_per_sec"])
+                self.logger.info("- before/after near-signals: %s/%s", validation.get("current_near_signal_count", 0), validation.get("suggested_near_signal_count", 0))
+                self.logger.info("- auto_apply: False")
+                self.research_pipeline.set_waiting_for_entry()
+                self.auto_research_active = False
+            except Exception as exc:
+                self.research_pipeline.set_error(str(exc))
+                self.logger.error("Auto research failed: %s", exc)
+                self.auto_research_active = False
         self._render_research_progress()
 
     def _render_research_progress(self) -> None:
@@ -667,7 +709,7 @@ class MainWindow(QMainWindow):
             return
         analyzer = SessionAnalyzer()
         analyzer.load(path)
-        data = analyzer.analyze()
+        data = analyzer.analyze(current_profile=self.detector.profile.__dict__)
         suggested = analyzer.suggest_profile()
         self.last_calibration_suggestion = CalibrationSuggestion(
             name=suggested["name"],

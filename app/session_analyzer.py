@@ -90,7 +90,7 @@ class SessionAnalyzer:
         }
         return suggested
 
-    def analyze(self) -> dict[str, Any]:
+    def analyze(self, current_profile: dict[str, Any] | None = None) -> dict[str, Any]:
         scores = [float(e.get("score", 0.0)) for e in self.events]
         detected_count = sum(1 for e in self.events if bool(e.get("detected", False)))
 
@@ -187,7 +187,7 @@ class SessionAnalyzer:
         suggested = self.suggest_profile()
         data["suggested_profile"] = suggested
         data["calibration_validation"] = self.validate_calibration_before_after(
-            current_profile=suggested.get("current_profile") or {},
+            current_profile=current_profile or {},
             suggested_profile=suggested,
         )
         self.report_data = data
