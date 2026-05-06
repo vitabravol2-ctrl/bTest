@@ -5,20 +5,15 @@ from app.config import (
     FAST_WINDOW_MS,
     INVALIDATION_COOLDOWN_MS,
     MAX_ALLOWED_SPREAD_PCT,
-    MAX_SLOW_TREND_DROP_PCT,
-    MAX_TREND_DROP_MID_PCT,
-    MIN_GRAB_DROP_PCT,
-    MIN_IMPULSE_SPEED_PCT_PER_SEC,
-    MIN_RECLAIM_BOUNCE_PCT,
     NEW_LOW_INVALIDATES_RECLAIM,
     RECLAIM_HOLD_MS,
     RECLAIM_TIMEOUT_MS,
     SETUP_MAX_AGE_MS,
-    SIGNAL_MIN_SCORE,
     USE_SLOW_TREND_FILTER,
 )
 from app.market_buffer import MarketBuffer
 from app.metrics import MarketMetrics
+from app.profiles import CONSERVATIVE, ThresholdProfile
 from app.signals import LiquidityGrabSignal
 
 
@@ -32,6 +27,10 @@ class LiquidityGrabDetector:
         self._sweep_started_ms: int | None = None
         self._last_invalid_reason = "-"
         self._invalidated_until_ms: int = 0
+        self.profile: ThresholdProfile = CONSERVATIVE
+
+    def set_profile(self, profile: ThresholdProfile) -> None:
+        self.profile = profile
 
     def reset(self, reason: str) -> None:
         now_ms = self._now_ms()
@@ -80,18 +79,18 @@ class LiquidityGrabDetector:
             reason_codes.extend(["HIGH_SPREAD", "INVALIDATED"])
             return self._build(False, 0.0, reason_codes, "Spread too high", now_ms, price_for_reclaim, debug)
 
-        if USE_SLOW_TREND_FILTER and metrics_slow.drop_pct > MAX_SLOW_TREND_DROP_PCT:
+        if USE_SLOW_TREND_FILTER and metrics_slow.drop_pct > self.profile.max_slow_trend_drop_pct:
             debug["slow_trend_ok"] = False
             self.reset("SLOW_TREND_TOO_DANGEROUS")
             reason_codes.extend(["SLOW_TREND_TOO_DANGEROUS", "INVALIDATED"])
             return self._build(False, 0.0, reason_codes, "Slow trend too dangerous", now_ms, price_for_reclaim, debug)
 
-        if metrics_mid.drop_pct > MAX_TREND_DROP_MID_PCT:
+        if metrics_mid.drop_pct > self.profile.max_trend_drop_mid_pct:
             self.reset("MID_TREND_TOO_DANGEROUS")
             reason_codes.extend(["MID_TREND_TOO_DANGEROUS", "INVALIDATED"])
             return self._build(False, 0.0, reason_codes, "Mid trend too dangerous", now_ms, price_for_reclaim, debug)
 
-        if metrics_fast.drop_pct < MIN_GRAB_DROP_PCT:
+        if metrics_fast.drop_pct < self.profile.min_grab_drop_pct:
             self._phase = "WATCHING_DROP"
             reason_codes.append("DROP_TOO_SMALL")
             return self._build(False, self._score(metrics_fast, metrics_mid), reason_codes, "Watching for stronger drop", now_ms, price_for_reclaim, debug)
@@ -112,7 +111,7 @@ class LiquidityGrabDetector:
             self._reclaim_since_ms = None
 
         reason_codes.append("SWEEP_FOUND")
-        self._reclaim_level = self._sweep_low * (1 + (MIN_RECLAIM_BOUNCE_PCT / 100.0)) if self._sweep_low is not None else None
+        self._reclaim_level = self._sweep_low * (1 + (self.profile.min_reclaim_bounce_pct / 100.0)) if self._sweep_low is not None else None
 
         if self._sweep_started_ms is not None and (now_ms - self._sweep_started_ms) > SETUP_MAX_AGE_MS:
             self.reset("SETUP_TOO_OLD")
@@ -120,8 +119,8 @@ class LiquidityGrabDetector:
             return self._build(False, 0.0, reason_codes, "Setup too old", now_ms, price_for_reclaim, debug)
 
         drop_speed = metrics_fast.drop_pct / (FAST_WINDOW_MS / 1000)
-        speed_ok = drop_speed >= MIN_IMPULSE_SPEED_PCT_PER_SEC
-        bounce_ok = metrics_fast.bounce_pct >= MIN_RECLAIM_BOUNCE_PCT
+        speed_ok = drop_speed >= self.profile.min_impulse_speed_pct_per_sec
+        bounce_ok = metrics_fast.bounce_pct >= self.profile.min_reclaim_bounce_pct
         reclaim_ok = price_for_reclaim is not None and self._reclaim_level is not None and price_for_reclaim >= self._reclaim_level
 
         debug["speed_ok"] = speed_ok
@@ -160,7 +159,7 @@ class LiquidityGrabDetector:
         score = self._score(metrics_fast, metrics_mid)
         hold_ok = self._phase == "RECLAIM_CONFIRMED"
         debug["hold_ok"] = hold_ok
-        if score >= SIGNAL_MIN_SCORE and speed_ok and reclaim_ok and hold_ok:
+        if score >= self.profile.signal_min_score and speed_ok and reclaim_ok and hold_ok:
             self._phase = "LONG_SIGNAL"
             reason_codes.append("LONG_SIGNAL_READY")
             return self._build(True, score, reason_codes, "Liquidity grab LONG signal ready", now_ms, price_for_reclaim, debug)
@@ -168,13 +167,13 @@ class LiquidityGrabDetector:
         return self._build(False, score, reason_codes, "Reclaim in progress", now_ms, price_for_reclaim, debug)
 
     def _score(self, metrics_fast: MarketMetrics, metrics_mid: MarketMetrics) -> float:
-        drop_score = min(metrics_fast.drop_pct / MIN_GRAB_DROP_PCT, 1.0) * 25.0
-        bounce_score = min(metrics_fast.bounce_pct / MIN_RECLAIM_BOUNCE_PCT, 1.0) * 25.0
+        drop_score = min(metrics_fast.drop_pct / self.profile.min_grab_drop_pct, 1.0) * 25.0
+        bounce_score = min(metrics_fast.bounce_pct / self.profile.min_reclaim_bounce_pct, 1.0) * 25.0
         drop_speed = metrics_fast.drop_pct / (FAST_WINDOW_MS / 1000)
-        speed_score = min(drop_speed / MIN_IMPULSE_SPEED_PCT_PER_SEC, 1.0) * 20.0
+        speed_score = min(drop_speed / self.profile.min_impulse_speed_pct_per_sec, 1.0) * 20.0
         spread_ratio = max(0.0, 1.0 - (metrics_fast.spread_avg_pct / MAX_ALLOWED_SPREAD_PCT))
         spread_score = min(spread_ratio, 1.0) * 15.0
-        trend_ratio = max(0.0, 1.0 - (metrics_mid.drop_pct / MAX_TREND_DROP_MID_PCT))
+        trend_ratio = max(0.0, 1.0 - (metrics_mid.drop_pct / self.profile.max_trend_drop_mid_pct))
         trend_score = min(trend_ratio, 1.0) * 15.0
         return round(min(drop_score + bounce_score + speed_score + spread_score + trend_score, 100.0), 2)
 

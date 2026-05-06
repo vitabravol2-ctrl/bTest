@@ -3,12 +3,12 @@ from app.config import (
     RECLAIM_HOLD_MS,
     RECLAIM_TIMEOUT_MS,
     SETUP_MAX_AGE_MS,
-    SIGNAL_MIN_SCORE,
 )
 from app.detector import LiquidityGrabDetector
 from app.market_buffer import MarketBuffer
 from app.metrics import MarketMetrics
 from app.models import MarketTick
+from app.profiles import CONSERVATIVE, DEBUG_ULTRA, SENSITIVE
 
 
 class FakeClock:
@@ -56,6 +56,11 @@ def test_waiting_data_no_signal():
     assert "WAITING_DATA" in s.reason_codes
 
 
+def test_default_profile_is_conservative():
+    d = LiquidityGrabDetector(now_ms_provider=FakeClock())
+    assert d.profile == CONSERVATIVE
+
+
 def test_drop_too_small_no_signal():
     d = LiquidityGrabDetector(now_ms_provider=FakeClock())
     s = d.detect(mt(drop=0.01), mt(), mt(), buf())
@@ -88,7 +93,30 @@ def test_sweep_then_reclaim_hold_then_long_signal():
     assert s3.side == "LONG"
     assert s3.phase == "LONG_SIGNAL"
     assert "LONG_SIGNAL_READY" in s3.reason_codes
-    assert s3.score >= SIGNAL_MIN_SCORE
+    assert s3.score >= d.profile.signal_min_score
+
+
+def test_sensitive_profile_allows_smaller_drop():
+    d = LiquidityGrabDetector(now_ms_provider=FakeClock())
+    d.set_profile(SENSITIVE)
+    s = d.detect(mt(drop=0.03, bounce=0.02), mt(drop=0.1), mt(drop=0.1), buf(ask=100.2))
+    assert "DROP_TOO_SMALL" not in s.reason_codes
+
+
+def test_profile_switch_changes_drop_threshold():
+    d = LiquidityGrabDetector(now_ms_provider=FakeClock())
+    s1 = d.detect(mt(drop=0.03), mt(drop=0.1), mt(drop=0.1), buf())
+    assert "DROP_TOO_SMALL" in s1.reason_codes
+    d.set_profile(SENSITIVE)
+    s2 = d.detect(mt(drop=0.03, bounce=0.02), mt(drop=0.1), mt(drop=0.1), buf(ask=100.2))
+    assert "DROP_TOO_SMALL" not in s2.reason_codes
+
+
+def test_debug_ultra_can_enter_sweep_on_small_drop():
+    d = LiquidityGrabDetector(now_ms_provider=FakeClock())
+    d.set_profile(DEBUG_ULTRA)
+    s = d.detect(mt(drop=0.011, bounce=0.006, low=99.0), mt(drop=0.05), mt(drop=0.05), buf(ask=100.2))
+    assert "SWEEP_FOUND" in s.reason_codes
 
 
 def test_reclaim_before_hold_no_signal():

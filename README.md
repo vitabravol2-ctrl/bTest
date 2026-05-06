@@ -1,20 +1,31 @@
-# bTest v0.4.0 — Signal Recorder + Replay Dataset
+# bTest v0.4.2 — Threshold Profiles + Config Panel
 
 bTest is a detector-focused prototype for BTCUSDT liquidity-grab analysis.
 
-## Scope in v0.4.0
+## Scope in v0.4.2
 - No live trading.
 - No API keys.
 - No paper execution.
-- Detector logic is unchanged (only data recording + replay tools added).
+- Recorder/replay flow remains supported.
+- Detector logic is unchanged; only threshold configurability was added.
 
-## What changed in v0.4.0
-- Added `SignalRecorder` (`app/recorder.py`) with JSONL session recording.
-- Added `ReplayEngine` (`app/replay.py`) to load/play/pause/step session files (console log output).
-- Added `data/sessions/` storage with `session_YYYYMMDD_HHMMSS.jsonl` naming.
-- Integrated recorder into GUI lifecycle (connect/start, tick/record, close/stop).
-- Added REC ● indicator lamp (green=recording, gray=off).
-- Added `LOAD REPLAY` button to open a JSONL replay file and log load status.
+## Why threshold profiles were added
+Real recordings showed that a fixed `MIN_GRAB_DROP_PCT=0.08` was too strict for many valid setups.
+Profiles allow changing sensitivity without editing code.
+
+## Available profiles
+- **CONSERVATIVE**: drop 0.08, bounce 0.04, speed 0.01, mid trend 0.35, slow trend 0.60, score 70
+- **BALANCED**: drop 0.04, bounce 0.02, speed 0.005, mid trend 0.30, slow trend 0.50, score 65
+- **SENSITIVE**: drop 0.02, bounce 0.01, speed 0.002, mid trend 0.25, slow trend 0.40, score 60
+- **DEBUG_ULTRA**: drop 0.01, bounce 0.005, speed 0.001, mid trend 0.20, slow trend 0.35, score 55
+
+## What changed in v0.4.2
+- Added `ThresholdProfile` and predefined profiles in `app/profiles.py`.
+- `LiquidityGrabDetector` now supports `set_profile(...)` and uses active profile thresholds.
+- Added GUI profile selector (QComboBox) and profile-change logging.
+- Added compact profile/threshold display in Detector Radar.
+- Recorder JSONL events now include `profile_name` and key threshold values.
+- Added profile-focused detector tests.
 
 ## Windows quick start
 1. Double click `start.bat`.
@@ -41,19 +52,5 @@ python -m compileall app main.py
 pytest -q
 ```
 
-## Recordings location
-- Session files are saved in `data/sessions/`.
-- File format: JSONL, one event per line.
-- Filename format: `session_YYYYMMDD_HHMMSS.jsonl`.
-
-## Replay usage (basic)
-1. Start GUI: `python main.py`.
-2. Click `LOAD REPLAY`.
-3. Select a file from `data/sessions/`.
-4. The app logs loaded file path and event count; replay engine currently logs playback to console only.
-
-
-### v0.3.4 GUI upgrades
-- Real cockpit indicators with dedicated LED status panel: WS, DATA, DROP, SWEEP, RECLAIM, SIGNAL, BLOCK.
-- Detector radar now includes prominent PHASE/SCORE, score progress bar (0-100), signal lamp text, and compact reason/reason-codes presentation.
-- Layout compacted to remove excess empty space in cards and optimize density for 1600x900.
+## Next step
+v0.4.3 — Session Analyzer / threshold calibration report.

@@ -1,46 +1,41 @@
 # bTest HANDOFF
 
 ## Version
-v0.4.0
+v0.4.2
 
 ## What changed
-- Added `SignalRecorder` (`app/recorder.py`):
-  - `start_session()`
-  - `stop_session()`
-  - `record_tick(tick, metrics, signal, fsm_state)`
-  - `flush_to_file()`
-- Recording format: JSONL events with market fields, analyzer metrics, detector fields, FSM state, and reason codes.
-- Added memory/IO guardrails:
-  - max in-memory buffer: 5000 events
-  - auto flush interval: every 2 seconds
-- Added replay module `ReplayEngine` (`app/replay.py`) with:
-  - `load_file(path)`
-  - `play(speed=1.0)`
-  - `pause()`
-  - `step()`
-- Integrated recorder in GUI:
-  - app connect → `start_session()`
-  - each tick → `record_tick(...)`
-  - close/disconnect → `stop_session()`
-- Added top-panel `REC ●` LED indicator:
-  - green = recording
-  - gray = off
-- Added `LOAD REPLAY` GUI button:
-  - opens file picker for `data/sessions/*.jsonl`
-  - loads file into replay engine and logs result
-- Added `data/sessions/.gitkeep` to preserve dataset folder in repo.
-- Updated README with recording/replay usage notes.
+- Added `ThresholdProfile` model and predefined sets in `app/profiles.py`:
+  - CONSERVATIVE
+  - BALANCED
+  - SENSITIVE
+  - DEBUG_ULTRA
+- Detector updates (`app/detector.py`):
+  - default profile is CONSERVATIVE
+  - `set_profile(profile)` API added
+  - profile-based thresholds wired for drop/bounce/speed/trend/score checks
+  - timing controls (`RECLAIM_HOLD_MS`, `SETUP_MAX_AGE_MS`, `RECLAIM_TIMEOUT_MS`) still come from config
+- GUI updates (`app/gui/main_window.py`):
+  - top-panel profile selector (QComboBox)
+  - runtime profile switching via `detector.set_profile(...)`
+  - explicit log line when profile changes
+  - detector radar now shows active profile + drop/bounce/score thresholds
+- Recorder updates (`app/recorder.py`):
+  - JSONL event now includes `profile_name`
+  - JSONL event includes key threshold snapshot:
+    - `min_grab_drop_pct`
+    - `min_reclaim_bounce_pct`
+    - `signal_min_score`
+- Tests (`tests/test_detector.py`):
+  - default profile test
+  - sensitive profile small-drop behavior
+  - profile switch threshold behavior
+  - debug ultra sweep entry with small drop
+  - legacy tests still passing
 
-## GUI layout
-- Left: market snapshot (symbol, last/bid/ask, spread, tick age/rate).
-- Center: detector radar (phase, score, side, signal, reason, reason codes, timers, invalid reason).
-- Right: analyzer values + FSM state.
-- Status color mapping implemented for connection/data quality/phase/signal cues.
-
-## Known limitations
-- No execution engine/trading integration.
-- Replay engine currently logs events to console only (no full GUI playback pipeline yet).
-- GUI is optimized for 16:9 desktop layouts and may require resizing on smaller displays.
+## Non-goals reaffirmed
+- No trading/execution engine.
+- No API keys.
+- No paper execution.
 
 ## Next recommended step
-v0.4.x — enrich replay controls and visual timeline integration.
+v0.4.3 — Session Analyzer / threshold calibration report.
