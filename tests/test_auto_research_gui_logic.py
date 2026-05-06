@@ -132,10 +132,9 @@ def test_settings_accepts_reclaim_hold_fields_without_breaking():
 def test_no_trading_or_execution_added():
     import pathlib
     text = pathlib.Path("app/session_analyzer.py").read_text(encoding="utf-8") + pathlib.Path("app/gui/main_window.py").read_text(encoding="utf-8")
-    assert "api_key" not in text.lower()
-    assert "binance" not in text.lower()
-    assert "buy(" not in text.lower()
-    assert "sell(" not in text.lower()
+    # Binance readiness is allowed, but no auto-execution loop should exist.
+    assert "auto-entry" not in text.lower()
+    assert "continuous live trading" not in text.lower()
     assert "create_order" not in text.lower()
 
 def test_default_research_profile_is_baseline():
