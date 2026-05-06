@@ -102,3 +102,46 @@ def test_analyze_calls_suggest_once_cleanly(tmp_path, monkeypatch):
 
     assert calls["count"] == 1
     assert data["suggested_profile"]["name"] == "CALIBRATED"
+
+
+def test_validation_recommends_apply_when_near_signals_improve(tmp_path):
+    p = tmp_path / "session_validation_apply.jsonl"
+    rows = []
+    for i in range(305):
+        rows.append({"ts": i, "phase": "LIQUIDITY_SWEEP" if i < 4 else "WATCHING_DROP", "drop_pct": 0.03, "bounce_pct": 0.02, "speed": 0.003, "score": 62, "detected": False, "debug": {}})
+    write_jsonl(p, rows)
+    analyzer = SessionAnalyzer()
+    analyzer.load(p)
+    suggested = {"name": "CALIBRATED", "min_grab_drop_pct": 0.02, "min_reclaim_bounce_pct": 0.01, "min_impulse_speed_pct_per_sec": 0.002, "signal_min_score": 55}
+    current = {"name": "CONSERVATIVE", "min_grab_drop_pct": 0.08, "min_reclaim_bounce_pct": 0.04, "min_impulse_speed_pct_per_sec": 0.01, "signal_min_score": 70}
+    result = analyzer.validate_calibration_before_after(current, suggested)
+    assert result["recommendation"] == "APPLY_RECOMMENDED"
+    assert result["delta_near_signals"] > 0
+
+
+def test_validation_needs_more_data_when_session_too_small(tmp_path):
+    p = tmp_path / "session_small.jsonl"
+    write_jsonl(p, [{"drop_pct": 0.04, "bounce_pct": 0.03, "speed": 0.004, "score": 61, "detected": False, "phase": "WATCHING_DROP"} for _ in range(10)])
+    analyzer = SessionAnalyzer()
+    analyzer.load(p)
+    result = analyzer.validate_calibration_before_after({}, {"name": "CALIBRATED"})
+    assert result["recommendation"] == "NEED_MORE_DATA"
+    assert result["confidence"] == "LOW"
+
+
+def test_validation_does_not_auto_apply_profile(tmp_path):
+    p = tmp_path / "session_auto_apply.jsonl"
+    write_jsonl(p, [{"drop_pct": 0.04, "bounce_pct": 0.03, "speed": 0.004, "score": 61, "detected": False, "phase": "WATCHING_DROP"} for _ in range(320)])
+    analyzer = SessionAnalyzer()
+    analyzer.load(p)
+    result = analyzer.validate_calibration_before_after({}, {"name": "CALIBRATED"})
+    assert result["auto_apply"] is False
+
+
+def test_report_contains_calibration_validation_section(tmp_path):
+    p = tmp_path / "session_report_validation.jsonl"
+    write_jsonl(p, [{"drop_pct": 0.01, "bounce_pct": 0.01, "speed": 0.002, "score": 52, "detected": False, "phase": "WATCHING_DROP", "debug": {"drop_ok": False}} for _ in range(20)])
+    analyzer = SessionAnalyzer()
+    analyzer.load(p)
+    analyzer.analyze()
+    assert "CALIBRATION VALIDATION" in analyzer.report_text
