@@ -81,3 +81,24 @@ def test_report_export_creates_file(tmp_path):
     assert report_path.exists()
     text = report_path.read_text(encoding="utf-8")
     assert "total_events" in text
+
+
+def test_analyze_calls_suggest_once_cleanly(tmp_path, monkeypatch):
+    p = tmp_path / "session_once.jsonl"
+    write_jsonl(p, [{"score": 52, "detected": False, "drop_pct": 0.02, "bounce_pct": 0.01, "speed": -0.002, "debug": {"drop_ok": False}}])
+
+    analyzer = SessionAnalyzer()
+    analyzer.load(p)
+
+    calls = {"count": 0}
+    original = SessionAnalyzer.suggest_profile
+
+    def wrapped(self):
+        calls["count"] += 1
+        return original(self)
+
+    monkeypatch.setattr(SessionAnalyzer, "suggest_profile", wrapped)
+    data = analyzer.analyze()
+
+    assert calls["count"] == 1
+    assert data["suggested_profile"]["name"] == "CALIBRATED"

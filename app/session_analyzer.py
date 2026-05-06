@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 from typing import Any
 
 
@@ -29,12 +29,20 @@ class SessionAnalyzer:
         return len(self.events)
 
     @staticmethod
-    def _p95(values: list[float]) -> float:
+    def _percentile(values: list[float], pct: float) -> float:
         if not values:
             return 0.0
         sorted_vals = sorted(values)
-        idx = int(0.95 * (len(sorted_vals) - 1))
+        idx = int(pct * (len(sorted_vals) - 1))
         return float(sorted_vals[idx])
+
+    @classmethod
+    def _p95(cls, values: list[float]) -> float:
+        return cls._percentile(values, 0.95)
+
+    @classmethod
+    def _p75(cls, values: list[float]) -> float:
+        return cls._percentile(values, 0.75)
 
     def suggest_profile(self) -> dict[str, Any]:
         if not self.report_data:
@@ -43,25 +51,41 @@ class SessionAnalyzer:
         near_signals_count = int(self.report_data.get("near_signals_count", 0))
 
         p95_drop_pct = float(hints.get("p95_drop_pct", 0.0))
-        p95_bounce_pct = float(hints.get("p95_bounce_pct", 0.0))
-        p95_speed = float(hints.get("p95_speed", 0.0))
+        all_bounce_p95 = float(hints.get("p95_bounce_pct", 0.0))
+        near_signal_bounce_p75 = float(hints.get("near_signal_bounce_p75", 0.0))
+        near_signal_bounce_median = float(hints.get("near_signal_bounce_median", 0.0))
+        p75_abs_speed = float(hints.get("p75_abs_speed", 0.0))
+        max_bounce = float(hints.get("max_bounce_pct", 0.0))
+
+        if near_signals_count > 0:
+            near_median_component = near_signal_bounce_median * 0.80 if near_signal_bounce_median > 0 else all_bounce_p95 * 0.55
+            min_reclaim_bounce_pct = max(0.003, min(all_bounce_p95 * 0.55, near_median_component))
+        else:
+            min_reclaim_bounce_pct = max(0.003, all_bounce_p95 * 0.50)
+
         suggested = {
             "name": "CALIBRATED",
-            "min_grab_drop_pct": max(0.005, p95_drop_pct * 0.80),
-            "min_reclaim_bounce_pct": max(0.003, p95_bounce_pct * 0.80),
-            "min_impulse_speed_pct_per_sec": max(0.0005, abs(p95_speed) * 0.70),
+            "min_grab_drop_pct": max(0.005, p95_drop_pct * 0.70),
+            "min_reclaim_bounce_pct": min_reclaim_bounce_pct,
+            "min_impulse_speed_pct_per_sec": max(0.0005, p75_abs_speed * 0.60),
             "signal_min_score": 55 if near_signals_count > 0 else 60,
             "max_trend_drop_mid_pct": 0.25,
             "max_slow_trend_drop_pct": 0.40,
             "reason": [
+                "bounce threshold softened to avoid overblocking",
+                "drop threshold uses p95*0.70",
+                "speed uses p75 abs speed",
                 f"p95_drop_pct={p95_drop_pct:.5f}",
-                f"p95_bounce_pct={p95_bounce_pct:.5f}",
-                f"p95_speed={p95_speed:.5f} (abs used)",
+                f"all_bounce_p95={all_bounce_p95:.5f}",
+                f"near_signal_bounce_p75={near_signal_bounce_p75:.5f}",
+                f"near_signal_bounce_median={near_signal_bounce_median:.5f}",
+                f"p75_abs_speed={p75_abs_speed:.5f}",
+                f"max_bounce_pct={max_bounce:.5f}",
                 f"near_signals_count={near_signals_count}",
                 f"near_signal_blockers={self.report_data.get('near_signal_blockers', {})}",
                 f"pass_drop_ok={hints.get('pass_drop_ok', 0)} pass_drop_bounce={hints.get('pass_drop_bounce', 0)}",
                 f"pass_drop_bounce_reclaim={hints.get('pass_drop_bounce_reclaim', 0)} pass_hold_ok={hints.get('pass_hold_ok', 0)}",
-                f"max_drop_pct={hints.get('max_drop_pct', 0.0):.5f} max_bounce_pct={hints.get('max_bounce_pct', 0.0):.5f}",
+                f"max_drop_pct={hints.get('max_drop_pct', 0.0):.5f}",
             ],
         }
         return suggested
@@ -113,6 +137,8 @@ class SessionAnalyzer:
         drop_values = [float(e.get("drop_pct", 0.0)) for e in self.events]
         bounce_values = [float(e.get("bounce_pct", 0.0)) for e in self.events]
         speed_values = [float(e.get("speed", 0.0)) for e in self.events]
+        near_signal_bounce_values = [float(e.get("bounce_pct", 0.0)) for e in near_signals]
+        drop_speed_abs_values = [abs(float(e.get("speed", 0.0))) for e in self.events if float(e.get("drop_pct", 0.0)) > 0]
 
         pass_drop = 0
         pass_drop_bounce = 0
@@ -148,15 +174,19 @@ class SessionAnalyzer:
                 "p95_bounce_pct": self._p95(bounce_values),
                 "max_speed": max(speed_values) if speed_values else 0.0,
                 "p95_speed": self._p95(speed_values),
+                "near_signal_bounce_p75": self._p75(near_signal_bounce_values) if near_signal_bounce_values else 0.0,
+                "near_signal_bounce_median": float(median(near_signal_bounce_values)) if near_signal_bounce_values else 0.0,
+                "p75_abs_speed": self._p75(drop_speed_abs_values) if drop_speed_abs_values else 0.0,
                 "pass_drop_ok": pass_drop,
                 "pass_drop_bounce": pass_drop_bounce,
                 "pass_drop_bounce_reclaim": pass_drop_bounce_reclaim,
                 "pass_hold_ok": pass_hold,
             },
         }
-        data["suggested_profile"] = self.suggest_profile() if self.report_data else None
         self.report_data = data
-        data["suggested_profile"] = self.suggest_profile()
+        suggested = self.suggest_profile()
+        data["suggested_profile"] = suggested
+        self.report_data = data
         self.report_text = self._format_report(data)
         return data
 
@@ -175,10 +205,10 @@ class SessionAnalyzer:
             lines.append("    - none")
 
         hints = data["threshold_hints"]
-        lines.extend(["", "Threshold hints:", f"  max_drop_pct: {hints['max_drop_pct']:.5f}", f"  p95_drop_pct: {hints['p95_drop_pct']:.5f}", f"  max_bounce_pct: {hints['max_bounce_pct']:.5f}", f"  p95_bounce_pct: {hints['p95_bounce_pct']:.5f}", f"  max_speed: {hints['max_speed']:.5f}", f"  p95_speed: {hints['p95_speed']:.5f}", f"  pass_drop_ok: {hints['pass_drop_ok']}", f"  pass_drop_bounce: {hints['pass_drop_bounce']}", f"  pass_drop_bounce_reclaim: {hints['pass_drop_bounce_reclaim']}", f"  pass_hold_ok: {hints['pass_hold_ok']}"])
+        lines.extend(["", "Threshold hints:", f"  max_drop_pct: {hints['max_drop_pct']:.5f}", f"  p95_drop_pct: {hints['p95_drop_pct']:.5f}", f"  max_bounce_pct: {hints['max_bounce_pct']:.5f}", f"  p95_bounce_pct: {hints['p95_bounce_pct']:.5f}", f"  near_signal_bounce_p75: {hints['near_signal_bounce_p75']:.5f}", f"  near_signal_bounce_median: {hints['near_signal_bounce_median']:.5f}", f"  max_speed: {hints['max_speed']:.5f}", f"  p95_speed: {hints['p95_speed']:.5f}", f"  p75_abs_speed: {hints['p75_abs_speed']:.5f}", f"  pass_drop_ok: {hints['pass_drop_ok']}", f"  pass_drop_bounce: {hints['pass_drop_bounce']}", f"  pass_drop_bounce_reclaim: {hints['pass_drop_bounce_reclaim']}", f"  pass_hold_ok: {hints['pass_hold_ok']}"])
 
         suggested = data.get("suggested_profile") or self.suggest_profile()
-        lines.extend(["", "=== SUGGESTED CALIBRATED PROFILE ===", f"Suggested drop={suggested['min_grab_drop_pct']:.3f}", f"Suggested bounce={suggested['min_reclaim_bounce_pct']:.3f}", f"Suggested speed={suggested['min_impulse_speed_pct_per_sec']:.3f}", f"Suggested score={suggested['signal_min_score']:.0f}", "Reasons:"])
+        lines.extend(["", "=== SUGGESTED CALIBRATED PROFILE ===", f"Suggested drop={suggested['min_grab_drop_pct']:.3f}", f"Suggested bounce={suggested['min_reclaim_bounce_pct']:.3f}", f"Suggested speed={suggested['min_impulse_speed_pct_per_sec']:.3f}", f"Suggested score={suggested['signal_min_score']:.0f}", f"source p95 drop={hints['p95_drop_pct']:.5f}", f"source p95 bounce={hints['p95_bounce_pct']:.5f}", f"source near median bounce={hints['near_signal_bounce_median']:.5f}", f"source p75 abs speed={hints['p75_abs_speed']:.5f}", "Reasons:"])
         for reason in suggested.get("reason", []):
             lines.append(f"  - {reason}")
         return "\n".join(lines) + "\n"
