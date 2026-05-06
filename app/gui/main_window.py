@@ -1,7 +1,5 @@
 import asyncio
-import json
 import time
-from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -60,8 +58,9 @@ from app.research_pipeline import AutoResearchPipeline
 from app.binance_settings import BinanceSettings, load_settings, save_settings
 from app.binance_client import BinanceClient
 from app.binance_filters import validate_market_buy_quote
+from app.position_state import PositionState, clear_position, load_position, save_position
+from app.exit_watcher import ExitWatcher
 
-POSITION_PATH = Path("data/settings/live_position.json")
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -83,7 +82,8 @@ class MainWindow(QMainWindow):
         self.binance_settings = load_settings()
         self.binance_client = BinanceClient(self.binance_settings)
         self.last_binance_filters = []
-        self.live_position: dict | None = None
+        self.live_position: PositionState | None = None
+        self.exit_watcher: ExitWatcher | None = None
         self.last_balance_usdt: float = 0.0
 
         self.log_view = QTextEdit()
@@ -663,13 +663,7 @@ class MainWindow(QMainWindow):
         self.lbl_paper_equity.setText(f"{float(pstats['equity_usdt']):.3f}")
         self.lbl_paper_last_result.setText(str(pstats["last_trade_result"]))
         if self.live_position:
-            entry = float(self.live_position.get("entry_price", 0.0))
-            qty = float(self.live_position.get("qty", 0.0))
-            pnl_usdt = (tick.bid - entry) * qty
-            pnl_pct = ((tick.bid / entry - 1.0) * 100.0) if entry else 0.0
-            self.lbl_pnl.setText(f"PnL {pnl_pct:.4f}% / {pnl_usdt:.4f} USDT")
-            if self.chk_auto_exit.isChecked() and (pnl_pct >= float(self.spin_tp_pct.value()) or pnl_pct <= float(self.spin_sl_pct.value())):
-                self._manual_sell_now()
+            self.lbl_pnl.setText(f"PnL {self.live_position.unrealized_pnl_pct:.4f}% / {self.live_position.unrealized_pnl_usdt:.4f} USDT")
 
 
         self.lbl_fast_drop.setText(f"{fast_metrics.drop_pct:.5f}")
@@ -916,62 +910,115 @@ class MainWindow(QMainWindow):
 
     def _manual_live_buy(self) -> None:
         budget = float(self.spin_budget.value())
+        if not self.chk_live.isChecked() or not self.binance_settings.live_enabled:
+            self.logger.error("audit: live error LIVE_DISABLED")
+            return
         if not self._typed_confirm_ok():
-            self.logger.error("audit: error live buy blocked without confirm")
+            self.logger.error("audit: live error MANUAL_CONFIRM_REQUIRED")
             return
-        if self.live_position is not None:
-            self.logger.error("audit: error live buy blocked if already position open")
+        if self.live_position is not None and self.live_position.status == "OPEN":
+            self.logger.error("audit: live error OPEN_POSITION_LOCK")
             return
+        if budget > 100:
+            self.logger.warning("audit: live buy preview budget warning >100 USDT")
         if budget > float(self.spin_max_buy.value()) or budget > float(self.binance_settings.quote_budget_usdt):
-            self.logger.error("audit: error live buy blocked if over budget")
+            self.logger.error("audit: live error BUDGET_EXCEEDED")
             return
-        self.logger.info("audit: buy sent")
+        self.logger.info("audit: live buy sent")
         r = self.binance_client.live_order_buy_market(self.binance_settings.symbol, budget, manual_confirm=True)
-        fills = r.get("fills", []) if isinstance(r, dict) else []
-        spent = float(r.get("cummulativeQuoteQty", budget)) if isinstance(r, dict) else budget
-        qty = float(r.get("executedQty", 0.0)) if isinstance(r, dict) else 0.0
+        if not isinstance(r, dict) or r.get("reason"):
+            self.logger.error("audit: live error %s", r)
+            return
+        fills = r.get("fills", [])
+        spent = float(r.get("cummulativeQuoteQty", budget))
+        qty = float(r.get("executedQty", 0.0))
         fee = sum(float(f.get("commission", 0.0)) for f in fills)
         entry_price = (spent / qty) if qty else 0.0
-        self.live_position = {"symbol": self.binance_settings.symbol, "qty": qty, "entry_price": entry_price, "spent": spent, "fee": fee}
+        now_ms = int(time.time() * 1000)
+        self.live_position = PositionState(symbol=self.binance_settings.symbol, entry_price=entry_price, qty=qty, spent_usdt=spent, fee_usdt=fee, entry_ts_ms=now_ms, tp_pct=float(self.spin_tp_pct.value()), sl_pct=float(self.spin_sl_pct.value()), tp_price=entry_price * (1 + float(self.spin_tp_pct.value())/100.0), sl_price=entry_price * (1 + float(self.spin_sl_pct.value())/100.0), auto_exit_enabled=self.chk_auto_exit.isChecked())
         self._persist_position()
+        self._start_exit_watcher()
         self.btn_sell_now.setEnabled(True)
         self.lbl_position.setText(f"Entry={entry_price:.2f} qty={qty:.6f} spent={spent:.4f} fee={fee:.6f}")
-        self.logger.warning("audit: buy filled %s", self.live_position)
-        self.logger.info("audit: watcher started")
+        self.logger.warning("audit: live buy filled %s", self.live_position.to_dict())
+        self.logger.info("audit: position opened")
 
 
     def _load_saved_position(self) -> None:
-        try:
-            self.live_position = json.loads(POSITION_PATH.read_text(encoding="utf-8"))
-            self.lbl_position.setText(f"Position loaded: {self.live_position.get('symbol')} qty={self.live_position.get('qty')}")
-            self.btn_sell_now.setEnabled(True)
-            self.logger.info("audit: position saved/restored")
-        except Exception:
-            self.live_position = None
+        self.live_position = load_position()
+        if self.live_position is None:
+            return
+        self.lbl_position.setText(f"Position loaded: {self.live_position.symbol} qty={self.live_position.qty:.6f}")
+        self.btn_sell_now.setEnabled(True)
+        self._start_exit_watcher()
+        self.logger.info("audit: position opened restored")
 
     def _persist_position(self) -> None:
-        POSITION_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if self.live_position is None:
-            if POSITION_PATH.exists():
-                POSITION_PATH.unlink()
+        if self.live_position is None or self.live_position.status != "OPEN":
+            clear_position()
             return
-        POSITION_PATH.write_text(json.dumps(self.live_position, indent=2), encoding="utf-8")
+        save_position(self.live_position)
 
     def _typed_confirm_ok(self) -> bool:
         return self.edit_confirm.text().strip().upper() == f"BUY {self.binance_settings.symbol}"
 
+    def _typed_sell_confirm_ok(self) -> bool:
+        return self.edit_confirm.text().strip().upper() == f"SELL {self.binance_settings.symbol}"
+
     def _manual_sell_now(self) -> None:
-        if not self.live_position:
+        if not self.live_position or self.live_position.status != "OPEN":
             return
-        qty = float(self.live_position.get("qty", 0.0))
+        if not self._typed_sell_confirm_ok():
+            self.logger.error("audit: live error SELL_CONFIRM_REQUIRED")
+            return
+        qty = float(self.live_position.qty)
         if qty <= 0:
             return
         self.logger.info("audit: sell sent")
-        r = self.binance_client.signed_request("POST", "/api/v3/order", {"symbol": self.binance_settings.symbol, "side": "SELL", "type": "MARKET", "quantity": qty})
+        r = self.binance_client.live_order_sell_market(self.binance_settings.symbol, qty, manual_confirm=True)
+        if not isinstance(r, dict) or r.get("reason"):
+            self.logger.error("audit: live error %s", r)
+            return
+        price = float(r.get("cummulativeQuoteQty", 0.0)) / float(r.get("executedQty", qty) or qty)
+        realized = (price - self.live_position.entry_price) * qty - self.live_position.fee_usdt
+        self.live_position.realized_pnl_usdt = realized
+        self.live_position.realized_pnl_pct = ((price / self.live_position.entry_price - 1.0) * 100.0) if self.live_position.entry_price else 0.0
+        self.live_position.status = "CLOSED"
+        self.live_position.exit_reason = "MANUAL_SELL"
+        self.live_position.closed_ts_ms = int(time.time() * 1000)
         self.logger.warning("audit: sell filled %s", r)
+        self.logger.info("audit: pnl realized %.6f", realized)
+        self.logger.info("audit: position closed")
         self.live_position = None
         self._persist_position()
+        if self.exit_watcher:
+            self.exit_watcher.stop()
+            self.logger.info("audit: watcher stopped")
         self.btn_sell_now.setEnabled(False)
+
+
+    def _start_exit_watcher(self) -> None:
+        if not self.live_position:
+            return
+        if self.exit_watcher is None:
+            self.exit_watcher = ExitWatcher(self._price_for_symbol, self._watcher_update, self._watcher_trigger, interval_sec=0.35)
+        self.exit_watcher.start(self.live_position)
+        self.logger.info("audit: watcher started")
+
+    def _price_for_symbol(self, symbol: str) -> float:
+        ticker = self.binance_client.get_book_ticker(symbol)
+        return float(ticker.get("bidPrice", 0.0) or 0.0)
+
+    def _watcher_update(self, position: PositionState) -> None:
+        self.live_position = position
+        self._persist_position()
+
+    def _watcher_trigger(self, reason: str, position: PositionState) -> None:
+        self.logger.warning("audit: %s", reason.lower().replace("_", " "))
+        if not position.auto_exit_enabled:
+            return
+        self.edit_confirm.setText(f"SELL {self.binance_settings.symbol}")
+        self._manual_sell_now()
 
     def refresh_age(self) -> None:
         now = int(time.time() * 1000)
