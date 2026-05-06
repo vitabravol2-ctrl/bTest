@@ -15,7 +15,7 @@ from app.config import (
 )
 from app.market_buffer import MarketBuffer
 from app.metrics import MarketMetrics
-from app.profiles import CONSERVATIVE, ThresholdProfile
+from app.profiles import BASELINE, ThresholdProfile
 from app.signals import LiquidityGrabSignal
 
 
@@ -29,7 +29,7 @@ class LiquidityGrabDetector:
         self._sweep_started_ms: int | None = None
         self._last_invalid_reason = "-"
         self._invalidated_until_ms: int = 0
-        self.profile: ThresholdProfile = CONSERVATIVE
+        self.profile: ThresholdProfile = BASELINE
         self.signal_unlock_debug = False
         self.unlock_p90_bounce_pct = 0.0
         self.adaptive_hold_enabled = False

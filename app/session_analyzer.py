@@ -6,6 +6,9 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any
 
+from app.paper_engine import PaperEngine
+from app.trade_plan import INVALID, PLANNED, SKIPPED
+
 GRADES = ("A_PLUS", "A", "B", "C", "TRASH")
 
 
@@ -257,6 +260,8 @@ class SessionAnalyzer:
         rows_with_prices = [(idx, e, self._event_ts_ms(e), self._event_price(e)) for idx, e in enumerate(self.events)]
         signal_perf_rows = []
         enriched_events = []
+        paper_engine = PaperEngine()
+        paper_plans = []
         post_signal_calculated_count = 0
         post_signal_missing_price_count = 0
         post_signal_insufficient_future_data_count = 0
@@ -267,6 +272,23 @@ class SessionAnalyzer:
             enriched["post_signal_calculated"] = False
             enriched["post_signal_reference_price"] = 0.0
             enriched["post_signal_reference_ts_ms"] = 0
+            plan = paper_engine.build_trade_plan(e)
+            paper_plans.append(plan)
+            if bool(e.get("is_new_market_event", False)):
+                enriched["paper_plan_status"] = plan.status
+                enriched["paper_plan_entry_price"] = plan.entry_price
+                enriched["paper_plan_tp_pct"] = plan.tp_pct
+                enriched["paper_plan_sl_pct"] = plan.sl_pct
+                enriched["paper_plan_timeout_ms"] = plan.timeout_ms
+                enriched["paper_plan_reason_codes"] = plan.reason_codes
+            else:
+                enriched["paper_plan_status"] = ""
+                enriched["paper_plan_entry_price"] = 0.0
+                enriched["paper_plan_tp_pct"] = 0.0
+                enriched["paper_plan_sl_pct"] = 0.0
+                enriched["paper_plan_timeout_ms"] = 0
+                enriched["paper_plan_reason_codes"] = []
+
             if not bool(e.get("is_new_market_event", False)):
                 enriched_events.append(enriched)
                 continue
@@ -315,6 +337,20 @@ class SessionAnalyzer:
                 for row in enriched_events:
                     outf.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+        market_plans = [paper_plans[i] for i, e in enumerate(self.events) if bool(e.get("is_new_market_event", False))]
+        grade_counter = Counter(p.signal_grade for p in market_plans if p.signal_grade)
+        planned_plans = [p for p in market_plans if p.status == PLANNED]
+        paper_plan_preview = {
+            "total_market_events": sum(1 for e in self.events if bool(e.get("is_new_market_event", False))),
+            "planned_count": sum(1 for p in market_plans if p.status == PLANNED),
+            "skipped_count": sum(1 for p in market_plans if p.status == SKIPPED),
+            "invalid_count": sum(1 for p in market_plans if p.status == INVALID),
+            "by_grade": dict(grade_counter),
+            "avg_tp_pct": mean([p.tp_pct for p in planned_plans]) if planned_plans else 0.0,
+            "avg_sl_pct": mean([p.sl_pct for p in planned_plans]) if planned_plans else 0.0,
+            "avg_timeout_ms": mean([p.timeout_ms for p in planned_plans]) if planned_plans else 0.0,
+        }
+
         post_perf = {}
         for grade in GRADES:
             rows=[r for r in signal_perf_rows if r["grade"]==grade]
@@ -360,6 +396,7 @@ class SessionAnalyzer:
             "post_signal_calculated_count": post_signal_calculated_count,
             "post_signal_missing_price_count": post_signal_missing_price_count,
             "post_signal_insufficient_future_data_count": post_signal_insufficient_future_data_count,
+            "paper_plan_preview": paper_plan_preview,
             "post_sweep_analysis": {
                 "sweep_ticks": len(sweep_events),
                 "unique_sweeps": unique_sweeps_count,
@@ -645,6 +682,7 @@ class SessionAnalyzer:
         hints = data["threshold_hints"]
         post = data.get("post_sweep_analysis", {})
         reclaim_hints = data.get("reclaim_hints", {})
+        paper_preview = data.get("paper_plan_preview", {})
         lines.extend(["", "Post Signal Persistence:", f"  enriched path: {data.get('enriched_session_path', '-')}", f"  calculated events: {data.get('post_signal_calculated_count', 0)}", f"  missing price: {data.get('post_signal_missing_price_count', 0)}", f"  insufficient future data: {data.get('post_signal_insufficient_future_data_count', 0)}", "", "Threshold hints:", f"  max_drop_pct: {hints['max_drop_pct']:.5f}", f"  p90_drop_pct: {hints['p90_drop_pct']:.5f}", f"  p95_drop_pct: {hints['p95_drop_pct']:.5f}", f"  max_bounce_pct: {hints['max_bounce_pct']:.5f}", f"  p90_bounce_pct: {hints['p90_bounce_pct']:.5f}", f"  p95_bounce_pct: {hints['p95_bounce_pct']:.5f}", f"  near_signal_bounce_p75: {hints['near_signal_bounce_p75']:.5f}", f"  near_signal_bounce_median: {hints['near_signal_bounce_median']:.5f}", f"  max_speed: {hints['max_speed']:.5f}", f"  p95_speed: {hints['p95_speed']:.5f}", f"  p75_abs_speed: {hints['p75_abs_speed']:.5f}", f"  pass_drop_ok: {hints['pass_drop_ok']}", f"  pass_drop_bounce: {hints['pass_drop_bounce']}", f"  pass_drop_bounce_reclaim: {hints['pass_drop_bounce_reclaim']}", f"  pass_hold_ok: {hints['pass_hold_ok']}"])
 
         suggested = data.get("suggested_profile") or self.suggest_profile()
@@ -675,7 +713,7 @@ class SessionAnalyzer:
         sq = data.get("signal_quality_paper", {}) or {}
         lines.extend(["", "SIGNAL QUALITY", f"  raw_long_signals: {sq.get('raw_signals', 0)}", f"  market_events: {sq.get('market_events', 0)}", f"  duplicate_signals_suppressed: {sq.get('duplicate_signals_suppressed', 0)}", f"  grade_counts: {sq.get('grade_counts', {})}", f"  average quality score: {sq.get('average_quality_score', 0.0):.2f}", f"  top trash reasons: {sq.get('top_trash_reasons', {})}", f"  top downgrade reasons: {sq.get('top_downgrade_reasons', {})}", "", "SIGNAL QUALITY / PAPER SIMULATION", f"  paper trades: {sq.get('paper_trades', 0)}", f"  wins/losses/timeouts: {sq.get('wins', 0)}/{sq.get('losses', 0)}/{sq.get('timeouts', 0)}", f"  winrate: {sq.get('winrate', 0.0):.2f}%", f"  avg pnl: {sq.get('avg_pnl', 0.0):.4f}%", f"  total pnl: {sq.get('total_pnl', 0.0):.4f}%", f"  max favorable avg: {sq.get('max_favorable_avg', 0.0):.4f}%", f"  max adverse avg: {sq.get('max_adverse_avg', 0.0):.4f}%", f"  recommendation: {sq.get('recommendation', 'NEED_MORE_DATA')}"])
 
-        lines.extend(["", "ADAPTIVE HOLD ANALYSIS", f"  detected_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('detected_count', 0)}", f"  would_signal_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('would_signal_count', 0)}", f"  hold_blocker_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('hold_blocker_count', 0)}", f"  effective_hold_median: {(data.get('adaptive_hold_analysis', {}) or {}).get('effective_hold_median', 0.0):.2f}", f"  effective_hold_p75: {(data.get('adaptive_hold_analysis', {}) or {}).get('effective_hold_p75', 0.0):.2f}", f"  adaptive_hold_active_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('adaptive_hold_active_count', 0)}", f"  detected_after_adaptive_hold: {(data.get('adaptive_hold_analysis', {}) or {}).get('detected_after_adaptive_hold', 0)}", f"  recommendation: {(data.get('adaptive_hold_analysis', {}) or {}).get('recommendation', 'NEED_MORE_DATA')}", "", "SIGNAL UNLOCK ANALYSIS", f"  would signals: {data.get('would_signal_count', 0)}", f"  would signals after sweep: {data.get('would_signal_after_sweep', 0)}", f"  would signal reasons: {data.get('would_signal_reasons', {})}", f"  would signal rate: {data.get('would_signal_rate', 0.0):.2f}%", f"  top unlock blockers: {(data.get('signal_unlock_analysis', {}) or {}).get('top_unlock_blockers', {})}", f"  avg would-signal score: {(data.get('signal_unlock_analysis', {}) or {}).get('avg_would_signal_score', 0.0):.2f}", f"  reclaim success before would-signal: {(data.get('signal_unlock_analysis', {}) or {}).get('reclaim_success_before_would_signal', 0.0):.2f}%", f"  recommendation: {(data.get('signal_unlock_analysis', {}) or {}).get('recommendation', 'STILL_NO_SIGNAL')}"])
+        lines.extend(["", "Paper Plan Preview", f"  planned/skipped/invalid: {paper_preview.get('planned_count', 0)}/{paper_preview.get('skipped_count', 0)}/{paper_preview.get('invalid_count', 0)}", f"  market events: {paper_preview.get('total_market_events', 0)}", f"  by_grade: {paper_preview.get('by_grade', {})}", f"  avg tp/sl/timeout: {paper_preview.get('avg_tp_pct', 0.0):.5f}/{paper_preview.get('avg_sl_pct', 0.0):.5f}/{paper_preview.get('avg_timeout_ms', 0.0):.1f}", "", "ADAPTIVE HOLD ANALYSIS", f"  detected_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('detected_count', 0)}", f"  would_signal_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('would_signal_count', 0)}", f"  hold_blocker_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('hold_blocker_count', 0)}", f"  effective_hold_median: {(data.get('adaptive_hold_analysis', {}) or {}).get('effective_hold_median', 0.0):.2f}", f"  effective_hold_p75: {(data.get('adaptive_hold_analysis', {}) or {}).get('effective_hold_p75', 0.0):.2f}", f"  adaptive_hold_active_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('adaptive_hold_active_count', 0)}", f"  detected_after_adaptive_hold: {(data.get('adaptive_hold_analysis', {}) or {}).get('detected_after_adaptive_hold', 0)}", f"  recommendation: {(data.get('adaptive_hold_analysis', {}) or {}).get('recommendation', 'NEED_MORE_DATA')}", "", "SIGNAL UNLOCK ANALYSIS", f"  would signals: {data.get('would_signal_count', 0)}", f"  would signals after sweep: {data.get('would_signal_after_sweep', 0)}", f"  would signal reasons: {data.get('would_signal_reasons', {})}", f"  would signal rate: {data.get('would_signal_rate', 0.0):.2f}%", f"  top unlock blockers: {(data.get('signal_unlock_analysis', {}) or {}).get('top_unlock_blockers', {})}", f"  avg would-signal score: {(data.get('signal_unlock_analysis', {}) or {}).get('avg_would_signal_score', 0.0):.2f}", f"  reclaim success before would-signal: {(data.get('signal_unlock_analysis', {}) or {}).get('reclaim_success_before_would_signal', 0.0):.2f}%", f"  recommendation: {(data.get('signal_unlock_analysis', {}) or {}).get('recommendation', 'STILL_NO_SIGNAL')}"])
         ba = data.get("bounce_reclaim_alignment_analysis", {}) or {}
         lines.extend(["", "BOUNCE / RECLAIM ALIGNMENT ANALYSIS", f"  base bounce threshold: {ba.get('base_bounce_threshold', 0.0):.5f}", f"  effective bounce threshold median/p75: {ba.get('effective_bounce_threshold_median', 0.0):.5f}/{ba.get('effective_bounce_threshold_p75', 0.0):.5f}", f"  reclaim distance median/p75: {ba.get('reclaim_distance_median_pct', 0.0):.5f}/{ba.get('reclaim_distance_p75_pct', 0.0):.5f}", f"  bounce blocker count: {ba.get('bounce_blocker_count', 0)}", f"  reclaim blocker count: {ba.get('reclaim_blocker_count', 0)}", f"  would_signal_bounce count: {ba.get('would_signal_bounce_count', 0)}", f"  would_signal_hold count: {ba.get('would_signal_hold_count', 0)}", f"  detected count: {ba.get('detected_count', 0)}", f"  recommendation: {ba.get('recommendation', 'READY_FOR_SIGNAL_QUALITY')}"])
         lines.extend(
