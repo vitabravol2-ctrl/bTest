@@ -7,6 +7,8 @@ from typing import Any
 
 
 class SignalRecorder:
+    MAX_IN_MEMORY_EVENTS = 50_000
+
     def __init__(self, data_dir: str | Path = "data/sessions", max_buffer: int = 5000, flush_interval_sec: float = 2.0) -> None:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -76,6 +78,8 @@ class SignalRecorder:
         }
         self._buffer.append(event)
         self.events.append(event)
+        if len(self.events) > self.MAX_IN_MEMORY_EVENTS:
+            self.events = self.events[-self.MAX_IN_MEMORY_EVENTS :]
 
         now = time.monotonic()
         if len(self._buffer) >= self.max_buffer or now - self._last_flush_monotonic >= self.flush_interval_sec:

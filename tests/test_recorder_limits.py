@@ -1,0 +1,30 @@
+import json
+
+from app.config import MAX_GUI_LOG_LINES
+from app.recorder import SignalRecorder
+
+
+class Dummy:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+def test_recorder_keeps_memory_limited_but_file_full(tmp_path):
+    recorder = SignalRecorder(data_dir=tmp_path, max_buffer=2)
+    recorder.MAX_IN_MEMORY_EVENTS = 5
+    recorder.start_session()
+    for i in range(12):
+        tick = Dummy(ts_ms=i, mid=100.0, bid=99.9, ask=100.1)
+        metrics = Dummy(drop_pct=0.01, bounce_pct=0.01, impulse_speed_pct_per_sec=0.001, volatility_pct=0.001, spread_avg_pct=0.001)
+        signal = Dummy(phase="NO_SETUP", score=1.0, detected=False, reason_codes=[], debug={})
+        profile = Dummy(name="TEST", min_grab_drop_pct=0.01, min_reclaim_bounce_pct=0.01, signal_min_score=50)
+        recorder.record_tick(tick, metrics, signal, "S", profile)
+    recorder.stop_session()
+    assert len(recorder.events) == 5
+    with recorder.session_path.open("r", encoding="utf-8") as f:  # type: ignore[union-attr]
+        lines = [json.loads(x) for x in f if x.strip()]
+    assert len(lines) == 12
+
+
+def test_gui_log_limit_constant_exists():
+    assert MAX_GUI_LOG_LINES == 1000

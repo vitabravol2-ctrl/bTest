@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from app.calibration import CalibrationSuggestion
 from app.session_analyzer import SessionAnalyzer
 
@@ -36,6 +38,40 @@ def test_suggest_profile_does_not_overraise_bounce(tmp_path):
     suggested = analyzer.suggest_profile()
     p95_bounce = data["threshold_hints"]["p95_bounce_pct"]
     assert suggested["min_reclaim_bounce_pct"] <= p95_bounce * 0.55
+
+
+def test_suggest_profile_uses_p90_drop_formula(tmp_path):
+    p = tmp_path / "session_p90_drop.jsonl"
+    rows = [{"drop_pct": v, "bounce_pct": 0.01, "speed": 0.002, "score": 10, "detected": False, "debug": {}} for v in [0.001, 0.010, 0.020, 0.030, 0.040]]
+    write_jsonl(p, rows)
+    analyzer = SessionAnalyzer(); analyzer.load(p); analyzer.analyze()
+    suggested = analyzer.suggest_profile()
+    assert suggested["min_grab_drop_pct"] == max(0.005, 0.030 * 0.70)
+
+
+def test_suggest_profile_uses_p90_bounce_formula(tmp_path):
+    p = tmp_path / "session_p90_bounce.jsonl"
+    rows = [
+        {"drop_pct": 0.02, "bounce_pct": 0.005, "speed": 0.002, "score": 50, "detected": False, "debug": {}},
+        {"drop_pct": 0.02, "bounce_pct": 0.010, "speed": 0.002, "score": 51, "detected": False, "debug": {}},
+        {"drop_pct": 0.02, "bounce_pct": 0.020, "speed": 0.002, "score": 52, "detected": False, "debug": {}},
+        {"drop_pct": 0.02, "bounce_pct": 0.030, "speed": 0.002, "score": 53, "detected": False, "debug": {}},
+    ]
+    write_jsonl(p, rows)
+    analyzer = SessionAnalyzer(); analyzer.load(p); analyzer.analyze()
+    suggested = analyzer.suggest_profile()
+    assert suggested["min_reclaim_bounce_pct"] == pytest.approx(0.011)
+
+
+def test_suggest_profile_upper_clamp_prevents_overblocking(tmp_path):
+    p = tmp_path / "session_clamp.jsonl"
+    rows = [{"drop_pct": v, "bounce_pct": v, "speed": 0.002, "score": 10, "detected": False, "debug": {}} for v in [0.001, 0.002, 0.5, 1.0]]
+    write_jsonl(p, rows)
+    analyzer = SessionAnalyzer(); analyzer.load(p); analyzer.analyze()
+    suggested = analyzer.suggest_profile()
+    hints = analyzer.report_data["threshold_hints"]
+    assert suggested["min_grab_drop_pct"] <= hints["p95_drop_pct"] * 0.70
+    assert suggested["min_reclaim_bounce_pct"] <= hints["p95_bounce_pct"] * 0.55
 
 
 def test_suggest_profile_uses_near_signal_bounce_median(tmp_path):

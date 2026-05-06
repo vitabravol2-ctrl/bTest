@@ -1,5 +1,7 @@
 from app.research_pipeline import AutoResearchPipeline
 from app.session_analyzer import SessionAnalyzer
+from app.detector import LiquidityGrabDetector
+from app.profiles import ThresholdProfile
 
 
 def test_analyze_accepts_current_profile_for_validation(monkeypatch):
@@ -67,3 +69,41 @@ def test_pipeline_error_state_sets_last_error():
     p.set_error("boom")
     assert p.progress.current_state == "ERROR"
     assert p.progress.last_error == "boom"
+
+
+def test_custom_profile_values_can_be_applied_to_detector():
+    detector = LiquidityGrabDetector()
+    custom = ThresholdProfile(
+        name="CUSTOM",
+        min_grab_drop_pct=0.0123,
+        min_reclaim_bounce_pct=0.0077,
+        min_impulse_speed_pct_per_sec=0.0011,
+        signal_min_score=58,
+        max_trend_drop_mid_pct=0.22,
+        max_slow_trend_drop_pct=0.33,
+    )
+    detector.set_profile(custom)
+    assert detector.profile.name == "CUSTOM"
+    assert detector.profile.min_grab_drop_pct == 0.0123
+
+
+def test_validation_uses_custom_current_profile(monkeypatch):
+    analyzer = SessionAnalyzer()
+    analyzer.events = [{"score": 55, "detected": False, "drop_pct": 0.02, "bounce_pct": 0.01, "speed": 0.003, "debug": {}}]
+    captured = {}
+
+    def fake_validate(self, current_profile, suggested_profile, **kwargs):
+        captured["name"] = current_profile.get("name")
+        return {"recommendation": "NEED_MORE_DATA", "confidence": "LOW", "reason": "x", "current_near_signal_count": 0, "suggested_near_signal_count": 0}
+
+    monkeypatch.setattr(SessionAnalyzer, "validate_calibration_before_after", fake_validate)
+    analyzer.analyze(
+        current_profile={
+            "name": "CUSTOM",
+            "min_grab_drop_pct": 0.011,
+            "min_reclaim_bounce_pct": 0.008,
+            "min_impulse_speed_pct_per_sec": 0.001,
+            "signal_min_score": 58,
+        }
+    )
+    assert captured["name"] == "CUSTOM"
