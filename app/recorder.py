@@ -48,7 +48,7 @@ class SignalRecorder:
         self.flush_to_file()
         self._active = False
 
-    def record_tick(self, tick, metrics, signal, fsm_state: str, profile=None) -> None:
+    def record_tick(self, tick, metrics, signal, fsm_state: str, profile=None, signal_quality=None, paper_trade_opened: bool = False, paper_trade_result: str | None = None) -> None:
         if not self._active:
             return
 
@@ -88,6 +88,10 @@ class SignalRecorder:
                 "min_reclaim_bounce_pct": float(getattr(profile, "min_reclaim_bounce_pct", 0.04)),
                 "signal_min_score": float(getattr(profile, "signal_min_score", 70.0)),
             },
+            "signal_group_id": int(getattr(signal_quality, "signal_group_id", 0)) if signal_quality else 0,
+            "signal_grade": str(getattr(signal_quality, "grade", "")) if signal_quality else "",
+            "paper_trade_opened": bool(paper_trade_opened),
+            "paper_trade_result": str(paper_trade_result or ""),
         }
         self._buffer.append(event)
         self.events.append(event)

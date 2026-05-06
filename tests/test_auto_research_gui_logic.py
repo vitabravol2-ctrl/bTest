@@ -133,7 +133,9 @@ def test_no_trading_or_execution_added():
     import pathlib
     text = pathlib.Path("app/session_analyzer.py").read_text(encoding="utf-8") + pathlib.Path("app/gui/main_window.py").read_text(encoding="utf-8")
     assert "api_key" not in text.lower()
-    assert "paper" not in text.lower()
+    assert "binance" not in text.lower()
+    assert "buy(" not in text.lower()
+    assert "sell(" not in text.lower()
     assert "create_order" not in text.lower()
 
 def test_default_research_profile_is_custom():

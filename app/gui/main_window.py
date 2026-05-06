@@ -49,6 +49,8 @@ from app.market_ws import MarketWSClient
 from app.recorder import SignalRecorder
 from app.replay import ReplayEngine
 from app.session_analyzer import SessionAnalyzer
+from app.signal_quality import SignalQualityEngine
+from app.paper_simulator import PaperSimulator
 from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
 from app.calibration import CalibrationSuggestion
 from app.profiles import PROFILES
@@ -71,6 +73,8 @@ class MainWindow(QMainWindow):
         )
         self.recorder = SignalRecorder()
         self.replay = ReplayEngine()
+        self.signal_quality = SignalQualityEngine(signal_min_score=self.detector.profile.signal_min_score)
+        self.paper_simulator = PaperSimulator()
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
@@ -422,6 +426,14 @@ class MainWindow(QMainWindow):
         self.lbl_ps_reclaim_rate = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         self.lbl_ps_hold_p75 = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         self.lbl_ps_status = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_trades = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_wins = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_losses = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_timeouts = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_winrate = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_avg_pnl = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_total_pnl = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_last_result = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         for title, label in (
             ("Status", self.lbl_research_status),
             ("Ticks", self.lbl_research_ticks),
@@ -437,6 +449,14 @@ class MainWindow(QMainWindow):
             ("PS Reclaim rate", self.lbl_ps_reclaim_rate),
             ("PS Hold p75", self.lbl_ps_hold_p75),
             ("PS Status", self.lbl_ps_status),
+            ("Paper trades", self.lbl_paper_trades),
+            ("Wins", self.lbl_paper_wins),
+            ("Losses", self.lbl_paper_losses),
+            ("Timeouts", self.lbl_paper_timeouts),
+            ("Winrate", self.lbl_paper_winrate),
+            ("Avg PnL %", self.lbl_paper_avg_pnl),
+            ("Total PnL %", self.lbl_paper_total_pnl),
+            ("Last trade", self.lbl_paper_last_result),
         ):
             ag.addWidget(QLabel(title), row, 0); ag.addWidget(label, row, 1); row += 1
 
@@ -544,8 +564,22 @@ class MainWindow(QMainWindow):
         self.detector.set_runtime_flags(signal_unlock_debug=bool(self.custom_runtime_params.get("signal_unlock_debug", 0.0) >= 0.5), p90_bounce_pct=float(self.custom_runtime_params.get("unlock_p90_bounce_pct", 0.0)), adaptive_hold_enabled=bool(self.custom_runtime_params.get("adaptive_hold_enabled", 1.0) >= 0.5))
         signal = self.detector.detect(m["fast"], m["mid"], m["slow"], self.buffer)
         result = self.fsm.evaluate(signal)
-        self.recorder.record_tick(tick, fast_metrics, signal, result.state, self.detector.profile)
+        quality = self.signal_quality.evaluate(signal, spread_ok=(fast_metrics.spread_avg_pct <= MAX_ALLOWED_SPREAD_PCT), reclaim_confirmed=("RECLAIM_CONFIRMED" in signal.reason_codes))
+        opened = False
+        if quality is not None:
+            opened = self.paper_simulator.open_long(signal.ts_ms, signal.trigger_price or tick.ask)
+        closed_trade = self.paper_simulator.on_tick(tick.ts_ms, tick.bid, tick.ask)
+        self.recorder.record_tick(tick, fast_metrics, signal, result.state, self.detector.profile, signal_quality=quality, paper_trade_opened=opened, paper_trade_result=(closed_trade.result if closed_trade else None))
         self._process_auto_research_tick(tick.ts_ms, signal)
+        pstats = self.paper_simulator.stats()
+        self.lbl_paper_trades.setText(str(pstats["paper_trades"]))
+        self.lbl_paper_wins.setText(str(pstats["wins"]))
+        self.lbl_paper_losses.setText(str(pstats["losses"]))
+        self.lbl_paper_timeouts.setText(str(pstats["timeouts"]))
+        self.lbl_paper_winrate.setText(f"{float(pstats['winrate']):.1f}%")
+        self.lbl_paper_avg_pnl.setText(f"{float(pstats['avg_pnl']):.3f}")
+        self.lbl_paper_total_pnl.setText(f"{float(pstats['total_pnl']):.3f}")
+        self.lbl_paper_last_result.setText(str(pstats["last_trade_result"]))
 
         self.lbl_fast_drop.setText(f"{fast_metrics.drop_pct:.5f}")
         self.lbl_fast_bounce.setText(f"{fast_metrics.bounce_pct:.5f}")
@@ -843,10 +877,13 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         chk_unlock = QCheckBox("Enable SIGNAL_UNLOCK_DEBUG", dialog)
         chk_adaptive_hold = QCheckBox("Enable Adaptive Hold", dialog)
+        chk_paper_sim = QCheckBox("Enable Paper Simulation", dialog)
         chk_unlock.setChecked(bool(self.custom_runtime_params.get("signal_unlock_debug", 0.0) >= 0.5))
         form.addRow(chk_unlock)
         chk_adaptive_hold.setChecked(bool(self.custom_runtime_params.get("adaptive_hold_enabled", 1.0) >= 0.5))
         form.addRow(chk_adaptive_hold)
+        chk_paper_sim.setChecked(self.paper_simulator.enabled)
+        form.addRow(chk_paper_sim)
         form.addRow(QLabel("Debug-only virtual signal mode. No trading."))
         fields: dict[str, QDoubleSpinBox] = {}
         for key, value, decimals in (
@@ -883,6 +920,7 @@ class MainWindow(QMainWindow):
             self.custom_runtime_params = {k: float(v.value()) for k, v in fields.items() if k not in profile_keys}
             self.custom_runtime_params["signal_unlock_debug"] = 1.0 if chk_unlock.isChecked() else 0.0
             self.custom_runtime_params["adaptive_hold_enabled"] = 1.0 if chk_adaptive_hold.isChecked() else 0.0
+            self.paper_simulator.enabled = chk_paper_sim.isChecked()
             if self.custom_runtime_params:
                 self.logger.info("Custom runtime params saved: %s", self.custom_runtime_params)
             return ThresholdProfile(name=name, **payload)
