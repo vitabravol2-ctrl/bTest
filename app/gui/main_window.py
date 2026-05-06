@@ -95,7 +95,7 @@ class MainWindow(QMainWindow):
         lbl.setAlignment((align or Qt.AlignmentFlag.AlignRight) | Qt.AlignmentFlag.AlignVCenter)
         return lbl
 
-    def _create_led(self, label_text: str, initial_status: str = "off") -> tuple[QFrame, QLabel]:
+    def _create_led(self, label_text: str, initial_status: str = "off") -> tuple[QFrame, QFrame]:
         row = QFrame()
         row.setObjectName("ledRow")
         row_layout = QHBoxLayout(row)
@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
         row_layout.addWidget(lamp)
         row_layout.addWidget(name)
         row_layout.addStretch(1)
-        return lamp, name
+        return row, lamp
 
     def _set_led(self, led: QFrame, status: str) -> None:
         led.setProperty("status", status)
@@ -135,24 +135,24 @@ class MainWindow(QMainWindow):
         self.lbl_title.setObjectName("appTitle")
         top.addWidget(self.lbl_title)
 
-        self.led_ws, _ = self._create_led("WS")
-        self.led_data, _ = self._create_led("DATA")
-        self.led_drop, _ = self._create_led("DROP")
-        self.led_sweep, _ = self._create_led("SWEEP")
-        self.led_reclaim, _ = self._create_led("RECLAIM")
-        self.led_signal, _ = self._create_led("SIGNAL")
-        self.led_block, _ = self._create_led("BLOCK")
+        self.row_ws, self.led_ws = self._create_led("WS")
+        self.row_data, self.led_data = self._create_led("DATA")
+        self.row_drop, self.led_drop = self._create_led("DROP")
+        self.row_sweep, self.led_sweep = self._create_led("SWEEP")
+        self.row_reclaim, self.led_reclaim = self._create_led("RECLAIM")
+        self.row_signal, self.led_signal = self._create_led("SIGNAL")
+        self.row_block, self.led_block = self._create_led("BLOCK")
 
-        for led in (
-            self.led_ws,
-            self.led_data,
-            self.led_drop,
-            self.led_sweep,
-            self.led_reclaim,
-            self.led_signal,
-            self.led_block,
+        for row in (
+            self.row_ws,
+            self.row_data,
+            self.row_drop,
+            self.row_sweep,
+            self.row_reclaim,
+            self.row_signal,
+            self.row_block,
         ):
-            top.addWidget(led.parentWidget())
+            top.addWidget(row)
 
         top.addStretch(1)
 
