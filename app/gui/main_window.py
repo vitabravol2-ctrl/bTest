@@ -112,12 +112,13 @@ class MainWindow(QMainWindow):
         self.lbl_det_phase, self.lbl_det_score, self.lbl_det_side = QLabel("NO_SETUP"), QLabel("0.0"), QLabel("NONE")
         self.lbl_trigger, self.lbl_grab_low, self.lbl_reclaim = QLabel("-"), QLabel("-"), QLabel("-")
         self.lbl_reason_codes, self.lbl_human_reason = QLabel("-"), QLabel("-")
+        self.lbl_setup_age, self.lbl_reclaim_hold, self.lbl_last_invalid = QLabel("0"), QLabel("0"), QLabel("-")
         self.lbl_reason_codes.setWordWrap(True)
         self.lbl_human_reason.setWordWrap(True)
         for i, (k, v) in enumerate([
             ("Phase", self.lbl_det_phase), ("Score", self.lbl_det_score), ("Side", self.lbl_det_side),
             ("Trigger price", self.lbl_trigger), ("Grab low", self.lbl_grab_low), ("Reclaim level", self.lbl_reclaim),
-            ("Reason codes", self.lbl_reason_codes), ("Human reason", self.lbl_human_reason),
+            ("Reason codes", self.lbl_reason_codes), ("Human reason", self.lbl_human_reason), ("Setup age ms", self.lbl_setup_age), ("Reclaim hold ms", self.lbl_reclaim_hold), ("Last invalid reason", self.lbl_last_invalid),
         ]):
             dg.addWidget(QLabel(k), i, 0)
             dg.addWidget(v, i, 1)
@@ -180,6 +181,9 @@ class MainWindow(QMainWindow):
         self.lbl_reclaim.setText("-" if signal.reclaim_level is None else f"{signal.reclaim_level:.2f}")
         self.lbl_reason_codes.setText(", ".join(signal.reason_codes) if signal.reason_codes else "-")
         self.lbl_human_reason.setText(signal.human_reason)
+        self.lbl_setup_age.setText(str(signal.setup_age_ms))
+        self.lbl_reclaim_hold.setText(str(signal.reclaim_hold_ms))
+        self.lbl_last_invalid.setText(signal.last_invalid_reason)
 
         self.lbl_state.setText(result.state)
         self.lbl_signal.setText(result.signal)
