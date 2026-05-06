@@ -189,10 +189,16 @@ class SessionAnalyzer:
             if bool(debug.get("hold_ok", False)):
                 pass_hold += 1
 
+        effective_hold_values = [float(e.get("effective_hold_ms", 0.0)) for e in self.events if float(e.get("effective_hold_ms", 0.0)) > 0]
+        adaptive_active_count = sum(1 for e in self.events if bool(e.get("adaptive_hold_active", False)))
+        hold_blocker_count = int(fail_counts.get("hold_ok", 0))
+        detected_after_adaptive_hold = sum(1 for e in self.events if bool(e.get("detected", False)) and bool(e.get("adaptive_hold_active", False)) and float(e.get("effective_hold_ms", 0.0)) < float(e.get("base_hold_ms", 0.0)))
+
         would_signal_reasons = Counter(str(e.get("would_signal_reason", "UNKNOWN")) for e in would_signals if e.get("would_signal_reason"))
         would_after_sweep = sum(1 for e in would_signals if "SWEEP_FOUND" in (e.get("reason_codes") or []))
+        total_events = len(self.events)
         data = {
-            "total_events": len(self.events),
+            "total_events": total_events,
             "detected_count": detected_count,
             "max_score": max(scores) if scores else 0.0,
             "would_signal_count": len(would_signals),
@@ -266,6 +272,29 @@ class SessionAnalyzer:
             "avg_would_signal_score": avg_would_score,
             "reclaim_success_before_would_signal": data["post_sweep_analysis"]["reclaim_success_rate"],
             "recommendation": recommendation,
+        }
+
+
+        adaptive_recommendation = "NEED_MORE_DATA"
+        detected_rate = (detected_count / total_events) if total_events else 0.0
+        if detected_rate > 0.05 or (len(would_signals) > 0 and detected_count > len(would_signals) * 0.75):
+            adaptive_recommendation = "HOLD_TOO_SOFT"
+        elif total_events < 100:
+            adaptive_recommendation = "NEED_MORE_DATA"
+        elif detected_count > 0:
+            adaptive_recommendation = "HOLD_OK"
+        elif hold_blocker_count > 0 and len(would_signals) > 0:
+            adaptive_recommendation = "HOLD_STILL_TOO_STRICT"
+
+        data["adaptive_hold_analysis"] = {
+            "detected_count": detected_count,
+            "would_signal_count": len(would_signals),
+            "hold_blocker_count": hold_blocker_count,
+            "effective_hold_median": float(median(effective_hold_values)) if effective_hold_values else 0.0,
+            "effective_hold_p75": self._p75(effective_hold_values) if effective_hold_values else 0.0,
+            "adaptive_hold_active_count": adaptive_active_count,
+            "detected_after_adaptive_hold": detected_after_adaptive_hold,
+            "recommendation": adaptive_recommendation,
         }
 
         data["reclaim_hints"] = {
@@ -437,7 +466,7 @@ class SessionAnalyzer:
                     f"  reason: {validation.get('reason', '-')}",
                 ]
             )
-        lines.extend(["", "SIGNAL UNLOCK ANALYSIS", f"  would signals: {data.get('would_signal_count', 0)}", f"  would signals after sweep: {data.get('would_signal_after_sweep', 0)}", f"  would signal reasons: {data.get('would_signal_reasons', {})}", f"  would signal rate: {data.get('would_signal_rate', 0.0):.2f}%", f"  top unlock blockers: {(data.get('signal_unlock_analysis', {}) or {}).get('top_unlock_blockers', {})}", f"  avg would-signal score: {(data.get('signal_unlock_analysis', {}) or {}).get('avg_would_signal_score', 0.0):.2f}", f"  reclaim success before would-signal: {(data.get('signal_unlock_analysis', {}) or {}).get('reclaim_success_before_would_signal', 0.0):.2f}%", f"  recommendation: {(data.get('signal_unlock_analysis', {}) or {}).get('recommendation', 'STILL_NO_SIGNAL')}"])
+        lines.extend(["", "ADAPTIVE HOLD ANALYSIS", f"  detected_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('detected_count', 0)}", f"  would_signal_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('would_signal_count', 0)}", f"  hold_blocker_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('hold_blocker_count', 0)}", f"  effective_hold_median: {(data.get('adaptive_hold_analysis', {}) or {}).get('effective_hold_median', 0.0):.2f}", f"  effective_hold_p75: {(data.get('adaptive_hold_analysis', {}) or {}).get('effective_hold_p75', 0.0):.2f}", f"  adaptive_hold_active_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('adaptive_hold_active_count', 0)}", f"  detected_after_adaptive_hold: {(data.get('adaptive_hold_analysis', {}) or {}).get('detected_after_adaptive_hold', 0)}", f"  recommendation: {(data.get('adaptive_hold_analysis', {}) or {}).get('recommendation', 'NEED_MORE_DATA')}", "", "SIGNAL UNLOCK ANALYSIS", f"  would signals: {data.get('would_signal_count', 0)}", f"  would signals after sweep: {data.get('would_signal_after_sweep', 0)}", f"  would signal reasons: {data.get('would_signal_reasons', {})}", f"  would signal rate: {data.get('would_signal_rate', 0.0):.2f}%", f"  top unlock blockers: {(data.get('signal_unlock_analysis', {}) or {}).get('top_unlock_blockers', {})}", f"  avg would-signal score: {(data.get('signal_unlock_analysis', {}) or {}).get('avg_would_signal_score', 0.0):.2f}", f"  reclaim success before would-signal: {(data.get('signal_unlock_analysis', {}) or {}).get('reclaim_success_before_would_signal', 0.0):.2f}%", f"  recommendation: {(data.get('signal_unlock_analysis', {}) or {}).get('recommendation', 'STILL_NO_SIGNAL')}"])
         lines.extend(
             [
                 "",

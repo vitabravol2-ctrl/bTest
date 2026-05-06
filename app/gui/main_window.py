@@ -53,6 +53,7 @@ from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
 from app.calibration import CalibrationSuggestion
 from app.profiles import PROFILES
 from app.profiles import ThresholdProfile
+from app.profiles import CUSTOM
 from app.research_pipeline import AutoResearchPipeline
 
 class MainWindow(QMainWindow):
@@ -82,8 +83,8 @@ class MainWindow(QMainWindow):
         self.research_pipeline = AutoResearchPipeline()
         self.auto_research_active = False
         self.auto_research_started_ms = 0
-        self._selected_profile_name = "CONSERVATIVE"
-        self.custom_runtime_params: dict[str, float] = {}
+        self._selected_profile_name = "CUSTOM"
+        self.custom_runtime_params: dict[str, float] = {"signal_unlock_debug": 1.0, "unlock_p90_bounce_pct": 0.020, "adaptive_hold_enabled": 1.0}
 
         self.ws = MarketWSClient(self.logger)
         self.ws.tick_received.connect(self.on_tick)
@@ -97,7 +98,8 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_age)
         self.timer.start(500)
-        self.on_profile_changed("CONSERVATIVE")
+        self.profile_combo.setCurrentText("CUSTOM")
+        self.on_profile_changed("CUSTOM")
 
     def on_profile_changed(self, profile_name: str) -> None:
         self._selected_profile_name = profile_name
@@ -206,7 +208,7 @@ class MainWindow(QMainWindow):
 
         top.addStretch(1)
         self.profile_combo = QComboBox()
-        self.profile_combo.addItems(["CONSERVATIVE", "BALANCED", "SENSITIVE", "DEBUG_ULTRA"])
+        self.profile_combo.addItems(["CUSTOM", "CONSERVATIVE", "BALANCED", "SENSITIVE", "DEBUG_ULTRA"])
         self.profile_combo.currentTextChanged.connect(self.on_profile_changed)
         top.addWidget(QLabel("Profile"))
         top.addWidget(self.profile_combo)
@@ -232,7 +234,13 @@ class MainWindow(QMainWindow):
         self.btn_settings.clicked.connect(self.open_profile_settings)
         controls = QHBoxLayout()
         controls.setSpacing(6)
-        for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_analyze_session, self.btn_apply_calibration, self.btn_start_auto_research, self.btn_settings, self.btn_clear):
+        self.btn_load_replay.setEnabled(False)
+        self.btn_load_replay.setVisible(False)
+        self.btn_analyze_session.setEnabled(False)
+        self.btn_analyze_session.setVisible(False)
+        self.btn_apply_calibration.setEnabled(False)
+        self.btn_apply_calibration.setVisible(False)
+        for btn in (self.btn_connect, self.btn_disconnect, self.btn_start_auto_research, self.btn_settings, self.btn_clear):
             btn.setMinimumHeight(34)
             btn.setMinimumWidth(104)
             controls.addWidget(btn)
@@ -293,6 +301,9 @@ class MainWindow(QMainWindow):
         self.lbl_setup_age = self._make_value_label(12)
         self.lbl_reclaim_hold = self._make_value_label(12)
         self.lbl_last_invalid = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_effective_hold = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_hold_reason = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_adaptive_hold = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
         self.lbl_profile = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
         self.lbl_drop_threshold = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
         self.lbl_bounce_threshold = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
@@ -315,14 +326,20 @@ class MainWindow(QMainWindow):
         dg.addWidget(self.lbl_reclaim_hold, 7, 1)
         dg.addWidget(QLabel("Last invalid"), 8, 0)
         dg.addWidget(self.lbl_last_invalid, 8, 1)
-        dg.addWidget(QLabel("Active profile"), 9, 0)
-        dg.addWidget(self.lbl_profile, 9, 1)
-        dg.addWidget(QLabel("Drop threshold"), 10, 0)
-        dg.addWidget(self.lbl_drop_threshold, 10, 1)
-        dg.addWidget(QLabel("Bounce threshold"), 11, 0)
-        dg.addWidget(self.lbl_bounce_threshold, 11, 1)
-        dg.addWidget(QLabel("Score threshold"), 12, 0)
-        dg.addWidget(self.lbl_score_threshold, 12, 1)
+        dg.addWidget(QLabel("Effective Hold"), 9, 0)
+        dg.addWidget(self.lbl_effective_hold, 9, 1)
+        dg.addWidget(QLabel("Hold Reason"), 10, 0)
+        dg.addWidget(self.lbl_hold_reason, 10, 1)
+        dg.addWidget(QLabel("Adaptive Hold"), 11, 0)
+        dg.addWidget(self.lbl_adaptive_hold, 11, 1)
+        dg.addWidget(QLabel("Active profile"), 12, 0)
+        dg.addWidget(self.lbl_profile, 12, 1)
+        dg.addWidget(QLabel("Drop threshold"), 13, 0)
+        dg.addWidget(self.lbl_drop_threshold, 13, 1)
+        dg.addWidget(QLabel("Bounce threshold"), 14, 0)
+        dg.addWidget(self.lbl_bounce_threshold, 14, 1)
+        dg.addWidget(QLabel("Score threshold"), 15, 0)
+        dg.addWidget(self.lbl_score_threshold, 15, 1)
         debug_items = [
             ("DROP condition", "drop_ok"),
             ("BOUNCE condition", "bounce_ok"),
@@ -331,7 +348,7 @@ class MainWindow(QMainWindow):
             ("HOLD condition", "hold_ok"),
             ("TREND condition", "slow_trend_ok"),
         ]
-        row_i = 13
+        row_i = 16
         for title, key in debug_items:
             lbl = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
             self.debug_labels[key] = lbl
@@ -518,7 +535,7 @@ class MainWindow(QMainWindow):
 
         m = self.analyzer.analyze(self.buffer)
         fast_metrics = m["fast"]
-        self.detector.set_runtime_flags(signal_unlock_debug=bool(self.custom_runtime_params.get("signal_unlock_debug", 0.0) >= 0.5), p90_bounce_pct=float(self.custom_runtime_params.get("unlock_p90_bounce_pct", 0.0)))
+        self.detector.set_runtime_flags(signal_unlock_debug=bool(self.custom_runtime_params.get("signal_unlock_debug", 0.0) >= 0.5), p90_bounce_pct=float(self.custom_runtime_params.get("unlock_p90_bounce_pct", 0.0)), adaptive_hold_enabled=bool(self.custom_runtime_params.get("adaptive_hold_enabled", 1.0) >= 0.5))
         signal = self.detector.detect(m["fast"], m["mid"], m["slow"], self.buffer)
         result = self.fsm.evaluate(signal)
         self.recorder.record_tick(tick, fast_metrics, signal, result.state, self.detector.profile)
@@ -541,6 +558,9 @@ class MainWindow(QMainWindow):
         self.lbl_setup_age.setText(f"{signal.setup_age_ms} ms")
         self.lbl_reclaim_hold.setText(f"{signal.reclaim_hold_ms} ms")
         self.lbl_last_invalid.setText(signal.last_invalid_reason)
+        self.lbl_effective_hold.setText(f"{signal.effective_hold_ms} / {signal.base_hold_ms} ms")
+        self.lbl_hold_reason.setText(signal.hold_reduction_reason or "base")
+        self.lbl_adaptive_hold.setText("ON" if signal.adaptive_hold_active else "OFF")
         debug = signal.debug or {}
         flag_to_name = {
             "drop_ok": "DROP",
@@ -814,8 +834,11 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
         chk_unlock = QCheckBox("Enable SIGNAL_UNLOCK_DEBUG", dialog)
+        chk_adaptive_hold = QCheckBox("Enable Adaptive Hold", dialog)
         chk_unlock.setChecked(bool(self.custom_runtime_params.get("signal_unlock_debug", 0.0) >= 0.5))
         form.addRow(chk_unlock)
+        chk_adaptive_hold.setChecked(bool(self.custom_runtime_params.get("adaptive_hold_enabled", 1.0) >= 0.5))
+        form.addRow(chk_adaptive_hold)
         form.addRow(QLabel("Debug-only virtual signal mode. No trading."))
         fields: dict[str, QDoubleSpinBox] = {}
         for key, value, decimals in (
@@ -851,6 +874,7 @@ class MainWindow(QMainWindow):
             payload = {k: float(v.value()) for k, v in fields.items() if k in profile_keys}
             self.custom_runtime_params = {k: float(v.value()) for k, v in fields.items() if k not in profile_keys}
             self.custom_runtime_params["signal_unlock_debug"] = 1.0 if chk_unlock.isChecked() else 0.0
+            self.custom_runtime_params["adaptive_hold_enabled"] = 1.0 if chk_adaptive_hold.isChecked() else 0.0
             if self.custom_runtime_params:
                 self.logger.info("Custom runtime params saved: %s", self.custom_runtime_params)
             return ThresholdProfile(name=name, **payload)

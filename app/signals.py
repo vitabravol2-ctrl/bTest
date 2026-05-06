@@ -22,3 +22,7 @@ class LiquidityGrabSignal:
     unlock_debug_active: bool = False
     unlock_blocker: str = ""
     unlock_reason: str = ""
+    adaptive_hold_active: bool = False
+    base_hold_ms: int = 0
+    effective_hold_ms: int = 0
+    hold_reduction_reason: str = ""

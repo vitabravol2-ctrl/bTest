@@ -218,3 +218,39 @@ def test_unlock_mode_respects_spread_guard():
     d.set_runtime_flags(signal_unlock_debug=True, p90_bounce_pct=0.02)
     s = d.detect(mt(drop=0.2, bounce=0.01, low=99.0, spread=1.0), mt(drop=0.1), mt(drop=0.1), buf(ask=100.2))
     assert s.would_signal is False
+
+def test_adaptive_hold_reduces_hold_for_high_score():
+    clock = FakeClock()
+    d = LiquidityGrabDetector(now_ms_provider=clock)
+    d.set_profile(DEBUG_ULTRA)
+    d.set_runtime_flags(adaptive_hold_enabled=True)
+    b = buf(ask=100.2)
+    s1 = d.detect(mt(drop=0.2, bounce=0.05, low=99.0), mt(drop=0.01), mt(drop=0.01), b)
+    assert s1.effective_hold_ms < RECLAIM_HOLD_MS
+
+
+def test_adaptive_hold_has_safety_floor():
+    clock = FakeClock()
+    d = LiquidityGrabDetector(now_ms_provider=clock)
+    d.set_profile(DEBUG_ULTRA)
+    d.set_runtime_flags(adaptive_hold_enabled=True)
+    b = buf(ask=100.2)
+    s = d.detect(mt(drop=1.0, bounce=1.0, low=99.0), mt(drop=0.0), mt(drop=0.0), b)
+    assert s.effective_hold_ms >= 80
+
+
+def test_adaptive_hold_does_not_bypass_reclaim():
+    d = LiquidityGrabDetector(now_ms_provider=FakeClock())
+    d.set_profile(DEBUG_ULTRA)
+    s = d.detect(mt(drop=0.2, bounce=0.05, low=99.0), mt(drop=0.0), mt(drop=0.0), buf(ask=90.0))
+    assert s.detected is False
+    assert s.debug.get("reclaim_ok") is False
+
+
+def test_detected_requires_normal_conditions_not_would_signal_only():
+    d = LiquidityGrabDetector(now_ms_provider=FakeClock())
+    d.set_profile(DEBUG_ULTRA)
+    d.set_runtime_flags(signal_unlock_debug=True, p90_bounce_pct=0.02, adaptive_hold_enabled=True)
+    s = d.detect(mt(drop=0.2, bounce=0.001, low=99.0), mt(drop=0.0), mt(drop=0.0), buf(ask=100.2))
+    assert s.would_signal is True
+    assert s.detected is False

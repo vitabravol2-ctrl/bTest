@@ -135,3 +135,17 @@ def test_no_trading_or_execution_added():
     assert "api_key" not in text.lower()
     assert "paper" not in text.lower()
     assert "create_order" not in text.lower()
+
+def test_default_research_profile_is_custom():
+    from app.profiles import PROFILES
+    custom = PROFILES["CUSTOM"]
+    assert custom.signal_min_score == 55
+    defaults = {"signal_unlock_debug": 1.0, "unlock_p90_bounce_pct": 0.020, "adaptive_hold_enabled": 1.0}
+    assert defaults["signal_unlock_debug"] == 1.0
+
+
+def test_gui_hides_nonessential_buttons():
+    text = __import__("pathlib").Path("app/gui/main_window.py").read_text(encoding="utf-8")
+    assert "self.btn_load_replay.setVisible(False)" in text
+    assert "self.btn_analyze_session.setVisible(False)" in text
+    assert "self.btn_apply_calibration.setVisible(False)" in text

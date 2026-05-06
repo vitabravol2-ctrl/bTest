@@ -32,13 +32,15 @@ class LiquidityGrabDetector:
         self.profile: ThresholdProfile = CONSERVATIVE
         self.signal_unlock_debug = False
         self.unlock_p90_bounce_pct = 0.0
+        self.adaptive_hold_enabled = False
 
     def set_profile(self, profile: ThresholdProfile) -> None:
         self.profile = profile
 
-    def set_runtime_flags(self, *, signal_unlock_debug: bool = False, p90_bounce_pct: float = 0.0) -> None:
+    def set_runtime_flags(self, *, signal_unlock_debug: bool = False, p90_bounce_pct: float = 0.0, adaptive_hold_enabled: bool = True) -> None:
         self.signal_unlock_debug = bool(signal_unlock_debug)
         self.unlock_p90_bounce_pct = max(0.0, float(p90_bounce_pct))
+        self.adaptive_hold_enabled = bool(adaptive_hold_enabled)
 
     def reset(self, reason: str) -> None:
         now_ms = self._now_ms()
@@ -140,6 +142,10 @@ class LiquidityGrabDetector:
         debug["bounce_ok"] = bounce_ok
         debug["reclaim_ok"] = reclaim_ok
         score = self._score(metrics_fast, metrics_mid)
+        adaptive_hold_active = bool(self.adaptive_hold_enabled)
+        base_hold_ms = RECLAIM_HOLD_MS
+        effective_hold_ms = RECLAIM_HOLD_MS
+        hold_reason = "base"
 
         if not speed_ok:
             reason_codes.append("IMPULSE_TOO_SLOW")
@@ -154,7 +160,7 @@ class LiquidityGrabDetector:
                 unlock_blocker = "bounce_ok"
                 would_signal_reason = "WOULD_SIGNAL_BOUNCE"
                 unlock_reason = would_signal_reason
-            return self._build(False, score, reason_codes, "Bounce too small", now_ms, price_for_reclaim, debug, would_signal=would_signal, would_signal_reason=would_signal_reason, unlock_debug_active=self.signal_unlock_debug, unlock_blocker=unlock_blocker, unlock_reason=unlock_reason)
+            return self._build(False, score, reason_codes, "Bounce too small", now_ms, price_for_reclaim, debug, would_signal=would_signal, would_signal_reason=would_signal_reason, unlock_debug_active=self.signal_unlock_debug, unlock_blocker=unlock_blocker, unlock_reason=unlock_reason, adaptive_hold_active=adaptive_hold_active, base_hold_ms=base_hold_ms, effective_hold_ms=effective_hold_ms, hold_reduction_reason=hold_reason)
 
         if reclaim_ok:
             self._phase = "RECLAIM_WAIT"
@@ -163,8 +169,22 @@ class LiquidityGrabDetector:
                 self._reclaim_since_ms = now_ms
             hold_ms = now_ms - self._reclaim_since_ms
             required_hold_ms = RECLAIM_HOLD_MS
-            if self.signal_unlock_debug and score >= 70 and speed_ok and self._phase in {"RECLAIM_WAIT", "RECLAIM_CONFIRMED"}:
-                required_hold_ms = int(RECLAIM_HOLD_MS * 0.70)
+            hold_reason = "base"
+            if self.adaptive_hold_enabled:
+                if score >= 90:
+                    required_hold_ms = int(RECLAIM_HOLD_MS * 0.35)
+                    hold_reason = "score>=90"
+                elif score >= 80:
+                    required_hold_ms = int(RECLAIM_HOLD_MS * 0.50)
+                    hold_reason = "score>=80"
+                elif score >= 70:
+                    required_hold_ms = int(RECLAIM_HOLD_MS * 0.70)
+                    hold_reason = "score>=70"
+                if bounce_ok and speed_ok and reclaim_ok:
+                    required_hold_ms = int(required_hold_ms * 0.80)
+                    hold_reason = f"{hold_reason}+quality"
+                required_hold_ms = max(80, min(RECLAIM_HOLD_MS, required_hold_ms))
+            effective_hold_ms = required_hold_ms
             if hold_ms >= required_hold_ms:
                 reason_codes.append("RECLAIM_CONFIRMED")
                 reason_codes.append("RECLAIM_HOLDING")
@@ -196,7 +216,7 @@ class LiquidityGrabDetector:
                 would_signal_reason = "WOULD_SIGNAL_BOUNCE" if fails[0] == "bounce_ok" else "WOULD_SIGNAL_HOLD"
                 unlock_reason = would_signal_reason
 
-        return self._build(False, score, reason_codes, "Reclaim in progress", now_ms, price_for_reclaim, debug, would_signal=would_signal, would_signal_reason=would_signal_reason, unlock_debug_active=self.signal_unlock_debug, unlock_blocker=unlock_blocker, unlock_reason=unlock_reason)
+        return self._build(False, score, reason_codes, "Reclaim in progress", now_ms, price_for_reclaim, debug, would_signal=would_signal, would_signal_reason=would_signal_reason, unlock_debug_active=self.signal_unlock_debug, unlock_blocker=unlock_blocker, unlock_reason=unlock_reason, adaptive_hold_active=adaptive_hold_active, base_hold_ms=base_hold_ms, effective_hold_ms=effective_hold_ms, hold_reduction_reason=hold_reason)
 
     def _score(self, metrics_fast: MarketMetrics, metrics_mid: MarketMetrics) -> float:
         drop_score = min(metrics_fast.drop_pct / self.profile.min_grab_drop_pct, 1.0) * 25.0
@@ -209,7 +229,7 @@ class LiquidityGrabDetector:
         trend_score = min(trend_ratio, 1.0) * 15.0
         return round(min(drop_score + bounce_score + speed_score + spread_score + trend_score, 100.0), 2)
 
-    def _build(self, detected: bool, score: float, reason_codes: list[str], reason: str, now_ms: int, trigger_price: float | None, debug: dict[str, bool], *, would_signal: bool = False, would_signal_reason: str = "", unlock_debug_active: bool = False, unlock_blocker: str = "", unlock_reason: str = "") -> LiquidityGrabSignal:
+    def _build(self, detected: bool, score: float, reason_codes: list[str], reason: str, now_ms: int, trigger_price: float | None, debug: dict[str, bool], *, would_signal: bool = False, would_signal_reason: str = "", unlock_debug_active: bool = False, unlock_blocker: str = "", unlock_reason: str = "", adaptive_hold_active: bool = False, base_hold_ms: int = RECLAIM_HOLD_MS, effective_hold_ms: int = RECLAIM_HOLD_MS, hold_reduction_reason: str = "base") -> LiquidityGrabSignal:
         reclaim_hold_ms = (now_ms - self._reclaim_since_ms) if self._reclaim_since_ms is not None else 0
         setup_age_ms = (now_ms - self._sweep_started_ms) if self._sweep_started_ms is not None else 0
         return LiquidityGrabSignal(
@@ -232,4 +252,8 @@ class LiquidityGrabDetector:
             unlock_debug_active=unlock_debug_active,
             unlock_blocker=unlock_blocker,
             unlock_reason=unlock_reason,
+            adaptive_hold_active=adaptive_hold_active,
+            base_hold_ms=base_hold_ms,
+            effective_hold_ms=effective_hold_ms,
+            hold_reduction_reason=hold_reduction_reason,
         )
