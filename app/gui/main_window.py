@@ -6,7 +6,10 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
+    QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -36,6 +39,7 @@ from app.config import (
     MIN_RESEARCH_TICKS,
     MIN_SWEEPS_FOR_CONFIDENCE,
     MIN_NEAR_SIGNALS_FOR_CONFIDENCE,
+    MAX_GUI_LOG_LINES,
 )
 from app.detector import LiquidityGrabDetector
 from app.logger import setup_logging
@@ -47,8 +51,8 @@ from app.session_analyzer import SessionAnalyzer
 from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
 from app.calibration import CalibrationSuggestion
 from app.profiles import PROFILES
+from app.profiles import ThresholdProfile
 from app.research_pipeline import AutoResearchPipeline
-
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -77,6 +81,7 @@ class MainWindow(QMainWindow):
         self.research_pipeline = AutoResearchPipeline()
         self.auto_research_active = False
         self.auto_research_started_ms = 0
+        self._selected_profile_name = "CONSERVATIVE"
 
         self.ws = MarketWSClient(self.logger)
         self.ws.tick_received.connect(self.on_tick)
@@ -93,12 +98,9 @@ class MainWindow(QMainWindow):
         self.on_profile_changed("CONSERVATIVE")
 
     def on_profile_changed(self, profile_name: str) -> None:
+        self._selected_profile_name = profile_name
         profile = PROFILES[profile_name]
-        self.detector.set_profile(profile)
-        self.lbl_profile.setText(profile.name)
-        self.lbl_drop_threshold.setText(f"{profile.min_grab_drop_pct:.3f}")
-        self.lbl_bounce_threshold.setText(f"{profile.min_reclaim_bounce_pct:.3f}")
-        self.lbl_score_threshold.setText(f"{profile.signal_min_score:.0f}")
+        self._apply_profile(profile)
         self.logger.info(
             "Profile changed: %s drop=%.2f bounce=%.2f score=%.0f",
             profile.name,
@@ -106,6 +108,13 @@ class MainWindow(QMainWindow):
             profile.min_reclaim_bounce_pct,
             profile.signal_min_score,
         )
+
+    def _apply_profile(self, profile: ThresholdProfile) -> None:
+        self.detector.set_profile(profile)
+        self.lbl_profile.setText(profile.name)
+        self.lbl_drop_threshold.setText(f"{profile.min_grab_drop_pct:.3f}")
+        self.lbl_bounce_threshold.setText(f"{profile.min_reclaim_bounce_pct:.3f}")
+        self.lbl_score_threshold.setText(f"{profile.signal_min_score:.0f}")
 
     def _make_card(self, title: str) -> tuple[QFrame, QGridLayout]:
         card = QFrame()
@@ -209,6 +218,7 @@ class MainWindow(QMainWindow):
         self.btn_apply_calibration = QPushButton("APPLY CAL")
         self.btn_apply_calibration.setToolTip("APPLY CALIBRATION")
         self.btn_start_auto_research = QPushButton("AUTO RESEARCH")
+        self.btn_settings = QPushButton("SETTINGS")
         self.btn_start_auto_research.setToolTip("START AUTO RESEARCH")
         self.btn_connect.clicked.connect(lambda: asyncio.create_task(self.ws.connect()))
         self.btn_disconnect.clicked.connect(lambda: asyncio.create_task(self.ws.disconnect()))
@@ -217,9 +227,10 @@ class MainWindow(QMainWindow):
         self.btn_analyze_session.clicked.connect(self.analyze_session_file)
         self.btn_apply_calibration.clicked.connect(self.apply_calibration)
         self.btn_start_auto_research.clicked.connect(self.start_auto_research)
+        self.btn_settings.clicked.connect(self.open_profile_settings)
         controls = QHBoxLayout()
         controls.setSpacing(6)
-        for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_analyze_session, self.btn_apply_calibration, self.btn_start_auto_research, self.btn_clear):
+        for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_analyze_session, self.btn_apply_calibration, self.btn_start_auto_research, self.btn_settings, self.btn_clear):
             btn.setMinimumHeight(34)
             btn.setMinimumWidth(104)
             controls.addWidget(btn)
@@ -447,6 +458,13 @@ class MainWindow(QMainWindow):
 
     def append_log(self, message: str) -> None:
         self.log_view.append(message)
+        doc = self.log_view.document()
+        while doc.blockCount() > MAX_GUI_LOG_LINES:
+            cursor = self.log_view.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            cursor.select(cursor.SelectionType.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
 
     def _set_debug_label(self, label: QLabel, name: str, ok: bool, blocked: bool) -> None:
         color = "#32d296" if ok else "#ef4444"
@@ -747,11 +765,7 @@ class MainWindow(QMainWindow):
             return
 
         profile = self.last_calibration_suggestion.to_profile()
-        self.detector.set_profile(profile)
-        self.lbl_profile.setText(profile.name)
-        self.lbl_drop_threshold.setText(f"{profile.min_grab_drop_pct:.3f}")
-        self.lbl_bounce_threshold.setText(f"{profile.min_reclaim_bounce_pct:.3f}")
-        self.lbl_score_threshold.setText(f"{profile.signal_min_score:.0f}")
+        self._apply_profile(profile)
         self.logger.info(
             "Applied CALIBRATED profile: drop=%.5f bounce=%.5f speed=%.5f score=%.0f",
             profile.min_grab_drop_pct,
@@ -759,6 +773,57 @@ class MainWindow(QMainWindow):
             profile.min_impulse_speed_pct_per_sec,
             profile.signal_min_score,
         )
+
+    def open_profile_settings(self) -> None:
+        profile = self.detector.profile
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Algorithm Profile Settings")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        fields: dict[str, QDoubleSpinBox] = {}
+        for key, value, decimals in (
+            ("min_grab_drop_pct", profile.min_grab_drop_pct, 5),
+            ("min_reclaim_bounce_pct", profile.min_reclaim_bounce_pct, 5),
+            ("min_impulse_speed_pct_per_sec", profile.min_impulse_speed_pct_per_sec, 5),
+            ("signal_min_score", profile.signal_min_score, 2),
+            ("max_trend_drop_mid_pct", profile.max_trend_drop_mid_pct, 5),
+            ("max_slow_trend_drop_pct", profile.max_slow_trend_drop_pct, 5),
+        ):
+            spin = QDoubleSpinBox(dialog)
+            spin.setDecimals(decimals)
+            spin.setRange(0.0, 1000.0)
+            spin.setValue(float(value))
+            form.addRow(key, spin)
+            fields[key] = spin
+        layout.addLayout(form)
+        btn_apply = QPushButton("Apply to current session")
+        btn_save_custom = QPushButton("Save as CUSTOM")
+        btn_reset = QPushButton("Reset to selected profile")
+        btn_close = QPushButton("Close")
+        row = QHBoxLayout()
+        for btn in (btn_apply, btn_save_custom, btn_reset, btn_close):
+            row.addWidget(btn)
+        layout.addLayout(row)
+
+        def _build_profile(name: str) -> ThresholdProfile:
+            return ThresholdProfile(name=name, **{k: float(v.value()) for k, v in fields.items()})
+
+        def _apply(name: str) -> None:
+            new_profile = _build_profile(name)
+            self._apply_profile(new_profile)
+            self.logger.info("Profile settings applied (%s): %s", name, {k: float(v.value()) for k, v in fields.items()})
+
+        def _reset() -> None:
+            selected = PROFILES.get(self._selected_profile_name, PROFILES["CONSERVATIVE"])
+            for key in fields:
+                fields[key].setValue(float(getattr(selected, key)))
+            self.logger.info("Profile settings reset to selected profile: %s", selected.name)
+
+        btn_apply.clicked.connect(lambda: _apply("CUSTOM"))
+        btn_save_custom.clicked.connect(lambda: _apply("CUSTOM"))
+        btn_reset.clicked.connect(_reset)
+        btn_close.clicked.connect(dialog.close)
+        dialog.exec()
 
 
 def run_app() -> None:
