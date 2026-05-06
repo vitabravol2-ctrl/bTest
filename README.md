@@ -1,59 +1,17 @@
-# bTest v0.3.0 — Liquidity Grab Detector / Signal Engine
+# bTest v0.3.2 — Detector Stabilization
 
-Desktop GUI-приложение для анализа BTCUSDT и детекции **Liquidity Grab / Stop Hunt** сигналов (только сигнализация, без торговли).
+bTest is a detector-focused prototype for BTCUSDT liquidity-grab analysis.
 
-## Что реализовано в v0.3.0
-- Добавлен `LiquidityGrabDetector` с фазами:
-  - `NO_SETUP`
-  - `WATCHING_DROP`
-  - `LIQUIDITY_SWEEP`
-  - `RECLAIM_CONFIRMED`
-  - `LONG_SIGNAL`
-- Добавлен `LiquidityGrabSignal` dataclass для унифицированного сигнала detector-а.
-- Добавлен scoring `0..100`:
-  - drop strength (до 25)
-  - bounce/reclaim (до 25)
-  - speed/impulse (до 20)
-  - spread quality (до 15)
-  - anti-trend filter (до 15)
-- Обновлён FSM: принимает `LiquidityGrabSignal` и отображает фазы detector-а (без сделок).
-- Обновлён GUI:
-  - новый блок **Liquidity Grab Detector**
-  - расширенный **Strategy Status** (FSM State / Signal / Reason)
-- Добавлено throttled detector logging summary каждые 2 секунды и отдельный лог при `LONG_SIGNAL_READY`.
+## Scope in v0.3.2
+- No live trading.
+- No API keys.
+- No paper execution.
+- No recorder/replay in this version.
 
-## Как читать detector
-- `phase` — текущая стадия паттерна.
-- `score` — качество сигнала (0–100).
-- `reason_codes` — почему сигнал заблокирован или подтверждён.
-- `detected=true` и `side=LONG` только если пройдены hard-фильтры и `score >= SIGNAL_MIN_SCORE`.
+## What is stabilized
+- Detector now supports injectable time provider (`now_ms_provider`) for deterministic tests.
+- Unit tests use `FakeClock` to drive reclaim hold/cooldown/timeout paths.
+- Detector/FSM behavior around invalidation and recovery is hardened.
 
-## Reason codes
-- `WAITING_DATA`
-- `STALE_DATA`
-- `HIGH_SPREAD`
-- `DROP_TOO_SMALL`
-- `BOUNCE_TOO_SMALL`
-- `IMPULSE_TOO_SLOW`
-- `MID_TREND_TOO_DANGEROUS`
-- `SWEEP_FOUND`
-- `RECLAIM_CONFIRMED`
-- `LONG_SIGNAL_READY`
-
-## Установка
-```bash
-pip install -r requirements.txt
-```
-
-## Запуск
-```bash
-python main.py
-```
-
-## Важно
-В версии v0.3.0 **нет торговли**:
-- нет API keys
-- нет live trading
-- нет реальных ордеров
-- нет paper execution
-- есть только detector сигнала + FSM + GUI отображение
+## Next milestone
+- v0.4.0 is planned for Signal Recorder + Replay Dataset.

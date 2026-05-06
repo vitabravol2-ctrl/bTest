@@ -32,20 +32,20 @@ class LiquidityGrabFSM:
             self.state = FSMState.SIGNAL_READY
             return FSMResult(self.state.value, "LONG_SIGNAL", signal.human_reason)
 
-        if signal.phase == "WATCHING_DROP":
-            self.state = FSMState.WATCHING_DROP
+        if signal.phase == "INVALIDATED":
+            self.state = FSMState.INVALIDATED
+        elif signal.phase == "WATCHING_DROP":
+            if prev_state == FSMState.SIGNAL_READY:
+                self.state = FSMState.COOLDOWN
+            else:
+                self.state = FSMState.WATCHING_DROP
         elif signal.phase == "LIQUIDITY_SWEEP":
             self.state = FSMState.SWEEP_DETECTED
         elif signal.phase == "RECLAIM_WAIT":
             self.state = FSMState.RECLAIM_WAIT
         elif signal.phase == "RECLAIM_CONFIRMED":
             self.state = FSMState.RECLAIM_CONFIRMED
-        elif signal.phase == "INVALIDATED":
-            self.state = FSMState.INVALIDATED
         elif signal.phase == "NO_SETUP":
-            if prev_state == FSMState.SIGNAL_READY:
-                self.state = FSMState.COOLDOWN
-            else:
-                self.state = FSMState.IDLE
+            self.state = FSMState.IDLE
 
         return FSMResult(self.state.value, "NO_SIGNAL", signal.human_reason)
