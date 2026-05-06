@@ -200,6 +200,14 @@ class SessionAnalyzer:
         reclaim_distance_values = [float(e.get("reclaim_distance_pct", 0.0)) for e in self.events]
         would_signal_bounce_count = sum(1 for e in would_signals if str(e.get("would_signal_reason", "")) == "WOULD_SIGNAL_BOUNCE")
         would_signal_hold_count = sum(1 for e in would_signals if str(e.get("would_signal_reason", "")) == "WOULD_SIGNAL_HOLD")
+        raw_signals = sum(1 for e in self.events if str(e.get("signal", "")) == "LONG_SIGNAL" or bool(e.get("detected", False)))
+        grouped_signals = len({int(e.get("signal_group_id", 0)) for e in self.events if int(e.get("signal_group_id", 0)) > 0})
+        grade_counts = Counter(str(e.get("signal_grade", "")) for e in self.events if str(e.get("signal_grade", "")) in {"A", "B", "C"})
+        closed_trades = [e for e in self.events if str(e.get("paper_trade_result", "")) in {"WIN", "LOSS", "TIMEOUT"}]
+        pnls = [float(e.get("paper_trade_pnl_pct", 0.0)) for e in closed_trades]
+        wins = sum(1 for e in closed_trades if e.get("paper_trade_result") == "WIN")
+        losses = sum(1 for e in closed_trades if e.get("paper_trade_result") == "LOSS")
+        timeouts = sum(1 for e in closed_trades if e.get("paper_trade_result") == "TIMEOUT")
         total_events = len(self.events)
         data = {
             "total_events": total_events,
@@ -323,6 +331,27 @@ class SessionAnalyzer:
             "recommendation": adaptive_recommendation,
         }
 
+        data["signal_quality_paper"] = {
+            "raw_signals": raw_signals,
+            "grouped_signals": grouped_signals,
+            "grade_counts": dict(grade_counts),
+            "paper_trades": len(closed_trades),
+            "wins": wins,
+            "losses": losses,
+            "timeouts": timeouts,
+            "winrate": (wins / len(closed_trades) * 100.0) if closed_trades else 0.0,
+            "avg_pnl": (sum(pnls) / len(pnls)) if pnls else 0.0,
+            "total_pnl": sum(pnls) if pnls else 0.0,
+            "max_favorable_avg": 0.0,
+            "max_adverse_avg": 0.0,
+            "recommendation": "NEED_MORE_DATA",
+        }
+        if raw_signals > 0 and grouped_signals and raw_signals / max(1, grouped_signals) > 3:
+            data["signal_quality_paper"]["recommendation"] = "SPAM_SIGNALS_GROUPING_NEEDED"
+        elif len(closed_trades) >= 5:
+            wr = data["signal_quality_paper"]["winrate"]
+            data["signal_quality_paper"]["recommendation"] = "SIGNALS_GOOD_ENOUGH_FOR_MORE_TESTING" if wr >= 50 else "TOO_MANY_FALSE_SIGNALS"
+
         data["reclaim_hints"] = {
             "suggested_min_reclaim_hold_ms": int(max(100, min(800, p75_hold * 0.70))) if p75_hold > 0 else 150,
             "suggested_reclaim_window_ms": int(max(1000, min(8000, p75_setup * 1.50))) if p75_setup > 0 else 3000,
@@ -388,6 +417,14 @@ class SessionAnalyzer:
 
         current_stats = _pass_counts(current)
         suggested_stats = _pass_counts(suggested)
+        raw_signals = sum(1 for e in self.events if str(e.get("signal", "")) == "LONG_SIGNAL" or bool(e.get("detected", False)))
+        grouped_signals = len({int(e.get("signal_group_id", 0)) for e in self.events if int(e.get("signal_group_id", 0)) > 0})
+        grade_counts = Counter(str(e.get("signal_grade", "")) for e in self.events if str(e.get("signal_grade", "")) in {"A", "B", "C"})
+        closed_trades = [e for e in self.events if str(e.get("paper_trade_result", "")) in {"WIN", "LOSS", "TIMEOUT"}]
+        pnls = [float(e.get("paper_trade_pnl_pct", 0.0)) for e in closed_trades]
+        wins = sum(1 for e in closed_trades if e.get("paper_trade_result") == "WIN")
+        losses = sum(1 for e in closed_trades if e.get("paper_trade_result") == "LOSS")
+        timeouts = sum(1 for e in closed_trades if e.get("paper_trade_result") == "TIMEOUT")
         total_events = len(self.events)
         sweeps_found = sum(1 for e in self.events if str(e.get("phase", "")) == "LIQUIDITY_SWEEP")
         post = self.report_data.get("post_sweep_analysis", {})
@@ -492,6 +529,10 @@ class SessionAnalyzer:
                     f"  reason: {validation.get('reason', '-')}",
                 ]
             )
+
+        sq = data.get("signal_quality_paper", {}) or {}
+        lines.extend(["", "SIGNAL QUALITY / PAPER SIMULATION", f"  raw signals: {sq.get('raw_signals', 0)}", f"  grouped signals: {sq.get('grouped_signals', 0)}", f"  grade counts: {sq.get('grade_counts', {})}", f"  paper trades: {sq.get('paper_trades', 0)}", f"  wins/losses/timeouts: {sq.get('wins', 0)}/{sq.get('losses', 0)}/{sq.get('timeouts', 0)}", f"  winrate: {sq.get('winrate', 0.0):.2f}%", f"  avg pnl: {sq.get('avg_pnl', 0.0):.4f}%", f"  total pnl: {sq.get('total_pnl', 0.0):.4f}%", f"  max favorable avg: {sq.get('max_favorable_avg', 0.0):.4f}%", f"  max adverse avg: {sq.get('max_adverse_avg', 0.0):.4f}%", f"  recommendation: {sq.get('recommendation', 'NEED_MORE_DATA')}"])
+
         lines.extend(["", "ADAPTIVE HOLD ANALYSIS", f"  detected_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('detected_count', 0)}", f"  would_signal_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('would_signal_count', 0)}", f"  hold_blocker_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('hold_blocker_count', 0)}", f"  effective_hold_median: {(data.get('adaptive_hold_analysis', {}) or {}).get('effective_hold_median', 0.0):.2f}", f"  effective_hold_p75: {(data.get('adaptive_hold_analysis', {}) or {}).get('effective_hold_p75', 0.0):.2f}", f"  adaptive_hold_active_count: {(data.get('adaptive_hold_analysis', {}) or {}).get('adaptive_hold_active_count', 0)}", f"  detected_after_adaptive_hold: {(data.get('adaptive_hold_analysis', {}) or {}).get('detected_after_adaptive_hold', 0)}", f"  recommendation: {(data.get('adaptive_hold_analysis', {}) or {}).get('recommendation', 'NEED_MORE_DATA')}", "", "SIGNAL UNLOCK ANALYSIS", f"  would signals: {data.get('would_signal_count', 0)}", f"  would signals after sweep: {data.get('would_signal_after_sweep', 0)}", f"  would signal reasons: {data.get('would_signal_reasons', {})}", f"  would signal rate: {data.get('would_signal_rate', 0.0):.2f}%", f"  top unlock blockers: {(data.get('signal_unlock_analysis', {}) or {}).get('top_unlock_blockers', {})}", f"  avg would-signal score: {(data.get('signal_unlock_analysis', {}) or {}).get('avg_would_signal_score', 0.0):.2f}", f"  reclaim success before would-signal: {(data.get('signal_unlock_analysis', {}) or {}).get('reclaim_success_before_would_signal', 0.0):.2f}%", f"  recommendation: {(data.get('signal_unlock_analysis', {}) or {}).get('recommendation', 'STILL_NO_SIGNAL')}"])
         ba = data.get("bounce_reclaim_alignment_analysis", {}) or {}
         lines.extend(["", "BOUNCE / RECLAIM ALIGNMENT ANALYSIS", f"  base bounce threshold: {ba.get('base_bounce_threshold', 0.0):.5f}", f"  effective bounce threshold median/p75: {ba.get('effective_bounce_threshold_median', 0.0):.5f}/{ba.get('effective_bounce_threshold_p75', 0.0):.5f}", f"  reclaim distance median/p75: {ba.get('reclaim_distance_median_pct', 0.0):.5f}/{ba.get('reclaim_distance_p75_pct', 0.0):.5f}", f"  bounce blocker count: {ba.get('bounce_blocker_count', 0)}", f"  reclaim blocker count: {ba.get('reclaim_blocker_count', 0)}", f"  would_signal_bounce count: {ba.get('would_signal_bounce_count', 0)}", f"  would_signal_hold count: {ba.get('would_signal_hold_count', 0)}", f"  detected count: {ba.get('detected_count', 0)}", f"  recommendation: {ba.get('recommendation', 'READY_FOR_SIGNAL_QUALITY')}"])
