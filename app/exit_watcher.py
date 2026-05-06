@@ -33,6 +33,7 @@ class ExitWatcher:
         self._stop.set()
 
     def _run(self, position: PositionState) -> None:
+        last_reason = ""
         while not self._stop.is_set() and position.status == "OPEN":
             price = float(self.get_price(position.symbol))
             position.last_price = price
@@ -44,6 +45,7 @@ class ExitWatcher:
                 reason = "TP_TRIGGER"
             elif position.sl_price and price <= position.sl_price:
                 reason = "SL_TRIGGER"
-            if reason:
+            if reason and reason != last_reason:
                 self.on_trigger(reason, position)
+            last_reason = reason
             time.sleep(self.interval_sec)
