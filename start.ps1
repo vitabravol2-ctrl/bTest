@@ -1,15 +1,22 @@
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
+Write-Host "[1/4] Preparing venv"
 if (-not (Test-Path ".venv")) {
     py -m venv .venv
 }
 
 . .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+
+Write-Host "[2/4] Installing requirements"
+python -m pip install --upgrade pip --quiet
+pip install -r requirements.txt --quiet
+
+Write-Host "[3/4] Running tests"
+pytest -q
 
 try {
+    Write-Host "[4/4] Starting app"
     python main.py
 }
 catch {
