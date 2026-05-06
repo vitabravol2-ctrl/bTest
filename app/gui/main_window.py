@@ -1,5 +1,6 @@
 import asyncio
 import time
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -38,6 +39,7 @@ from app.market_buffer import MarketBuffer
 from app.market_ws import MarketWSClient
 from app.recorder import SignalRecorder
 from app.replay import ReplayEngine
+from app.session_analyzer import SessionAnalyzer
 from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
 from app.profiles import PROFILES
 
@@ -190,11 +192,13 @@ class MainWindow(QMainWindow):
         self.btn_disconnect = QPushButton("DISCONNECT")
         self.btn_clear = QPushButton("CLEAR LOG")
         self.btn_load_replay = QPushButton("LOAD REPLAY")
+        self.btn_analyze_session = QPushButton("ANALYZE SESSION")
         self.btn_connect.clicked.connect(lambda: asyncio.create_task(self.ws.connect()))
         self.btn_disconnect.clicked.connect(lambda: asyncio.create_task(self.ws.disconnect()))
         self.btn_clear.clicked.connect(self.log_view.clear)
         self.btn_load_replay.clicked.connect(self.load_replay_file)
-        for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_clear):
+        self.btn_analyze_session.clicked.connect(self.analyze_session_file)
+        for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_analyze_session, self.btn_clear):
             btn.setMinimumHeight(34)
             top.addWidget(btn)
 
@@ -552,6 +556,26 @@ class MainWindow(QMainWindow):
             return
         count = self.replay.load_file(path)
         self.logger.info("Replay file loaded: %s (events=%d)", path, count)
+
+    def analyze_session_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select session for analysis", "data/sessions", "JSONL (*.jsonl)")
+        if not path:
+            return
+        analyzer = SessionAnalyzer()
+        analyzer.load(path)
+        data = analyzer.analyze()
+        report_path = Path(path).with_name(f"{Path(path).stem}_report.txt")
+        analyzer.export_report(report_path)
+        blockers = data.get("near_signal_blockers", {})
+        top_blocker = max(blockers.items(), key=lambda x: x[1])[0] if blockers else "none"
+        self.logger.info(
+            "Session analysis complete: total_events=%d max_score=%.2f detected_count=%d top_blocker=%s report=%s",
+            data.get("total_events", 0),
+            float(data.get("max_score", 0.0)),
+            data.get("detected_count", 0),
+            top_blocker,
+            report_path,
+        )
 
 
 def run_app() -> None:

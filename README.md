@@ -1,13 +1,39 @@
-# bTest v0.4.2 — Threshold Profiles + Config Panel
+# bTest v0.4.3 — Session Analyzer / Threshold Calibration Report
 
 bTest is a detector-focused prototype for BTCUSDT liquidity-grab analysis.
 
-## Scope in v0.4.2
+## Scope in v0.4.3
 - No live trading.
 - No API keys.
 - No paper execution.
 - Recorder/replay flow remains supported.
-- Detector logic is unchanged; only threshold configurability was added.
+- Detector logic is unchanged; only offline session analysis was added.
+
+## New in v0.4.3: Session Analyzer
+Analyze recorded `session_*.jsonl` files to understand:
+- why a signal did not appear
+- which conditions block most often
+- what profile was used most
+- what threshold calibration hints the session suggests
+
+### Analyze via GUI
+1. Start app (`python main.py`).
+2. Click **ANALYZE SESSION**.
+3. Select a JSONL file from `data/sessions`.
+4. The app saves `session_xxx_report.txt` рядом с JSONL и пишет в лог:
+   - `total_events`
+   - `max_score`
+   - `detected_count`
+   - top blocker
+   - report path
+
+### Analyze via CLI
+```bash
+python tools/analyze_session.py data/sessions/session_xxx.jsonl
+```
+
+The command prints a text report to console and saves:
+- `data/sessions/session_xxx_report.txt`
 
 ## Why threshold profiles were added
 Real recordings showed that a fixed `MIN_GRAB_DROP_PCT=0.08` was too strict for many valid setups.
@@ -53,4 +79,4 @@ pytest -q
 ```
 
 ## Next step
-v0.4.3 — Session Analyzer / threshold calibration report.
+v0.4.4 — Replay Timeline GUI / calibration presets.
