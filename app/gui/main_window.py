@@ -4,6 +4,7 @@ import time
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -34,6 +35,8 @@ from app.detector import LiquidityGrabDetector
 from app.logger import setup_logging
 from app.market_buffer import MarketBuffer
 from app.market_ws import MarketWSClient
+from app.recorder import SignalRecorder
+from app.replay import ReplayEngine
 from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
 
 
@@ -50,6 +53,8 @@ class MainWindow(QMainWindow):
         self.analyzer = DataAnalyzer(
             AnalyzerConfig(FAST_WINDOW_MS, MID_WINDOW_MS, SLOW_WINDOW_MS, MIN_TICKS_FAST, STALE_AFTER_MS)
         )
+        self.recorder = SignalRecorder()
+        self.replay = ReplayEngine()
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
@@ -142,6 +147,7 @@ class MainWindow(QMainWindow):
         self.row_reclaim, self.led_reclaim = self._create_led("RECLAIM")
         self.row_signal, self.led_signal = self._create_led("SIGNAL")
         self.row_block, self.led_block = self._create_led("BLOCK")
+        self.row_rec, self.led_rec = self._create_led("REC ●")
 
         for row in (
             self.row_ws,
@@ -151,6 +157,7 @@ class MainWindow(QMainWindow):
             self.row_reclaim,
             self.row_signal,
             self.row_block,
+            self.row_rec,
         ):
             top.addWidget(row)
 
@@ -159,10 +166,12 @@ class MainWindow(QMainWindow):
         self.btn_connect = QPushButton("CONNECT")
         self.btn_disconnect = QPushButton("DISCONNECT")
         self.btn_clear = QPushButton("CLEAR LOG")
+        self.btn_load_replay = QPushButton("LOAD REPLAY")
         self.btn_connect.clicked.connect(lambda: asyncio.create_task(self.ws.connect()))
         self.btn_disconnect.clicked.connect(lambda: asyncio.create_task(self.ws.disconnect()))
         self.btn_clear.clicked.connect(self.log_view.clear)
-        for btn in (self.btn_connect, self.btn_disconnect, self.btn_clear):
+        self.btn_load_replay.clicked.connect(self.load_replay_file)
+        for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_clear):
             btn.setMinimumHeight(34)
             top.addWidget(btn)
 
@@ -332,6 +341,13 @@ class MainWindow(QMainWindow):
     def on_status(self, status: str) -> None:
         status_map = {"CONNECTED": "green", "DISCONNECTED": "off", "STALE": "orange"}
         self._set_led(self.led_ws, status_map.get(status, "off"))
+        if status == "CONNECTED":
+            path = self.recorder.start_session()
+            self._set_led(self.led_rec, "green")
+            self.logger.info("Recorder started: %s", path)
+        elif status == "DISCONNECTED":
+            self.recorder.stop_session()
+            self._set_led(self.led_rec, "off")
 
     def on_error(self, message: str) -> None:
         self.append_log(f"ERROR | {message}")
@@ -356,6 +372,7 @@ class MainWindow(QMainWindow):
         fast_metrics = m["fast"]
         signal = self.detector.detect(m["fast"], m["mid"], m["slow"], self.buffer)
         result = self.fsm.evaluate(signal)
+        self.recorder.record_tick(tick, fast_metrics, signal, result.state)
 
         self.lbl_fast_drop.setText(f"{fast_metrics.drop_pct:.5f}")
         self.lbl_fast_bounce.setText(f"{fast_metrics.bounce_pct:.5f}")
@@ -432,8 +449,16 @@ class MainWindow(QMainWindow):
         self.lbl_age.setText(age_text)
 
     def closeEvent(self, event):  # noqa: N802
+        self.recorder.stop_session()
         asyncio.create_task(self.ws.disconnect())
         super().closeEvent(event)
+
+    def load_replay_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select replay session", "data/sessions", "JSONL (*.jsonl)")
+        if not path:
+            return
+        count = self.replay.load_file(path)
+        self.logger.info("Replay file loaded: %s (events=%d)", path, count)
 
 
 def run_app() -> None:

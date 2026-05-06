@@ -1,17 +1,20 @@
-# bTest v0.3.4 — Real Cockpit Indicators GUI + Launcher/Updater
+# bTest v0.4.0 — Signal Recorder + Replay Dataset
 
 bTest is a detector-focused prototype for BTCUSDT liquidity-grab analysis.
 
-## Scope in v0.3.4
+## Scope in v0.4.0
 - No live trading.
 - No API keys.
 - No paper execution.
-- No recorder/replay in this version.
+- Detector logic is unchanged (only data recording + replay tools added).
 
-## What changed in v0.3.4
-- GUI redesigned into a compact cockpit dashboard with top LED indicator strip and 3-column radar layout.
-- Detector/FSM/analyzer/market fields are visible on a single 1600x900 screen without scrolling.
-- Added Windows launcher and updater scripts (`start.bat`, `update.bat`, `start.ps1`, `update.ps1`).
+## What changed in v0.4.0
+- Added `SignalRecorder` (`app/recorder.py`) with JSONL session recording.
+- Added `ReplayEngine` (`app/replay.py`) to load/play/pause/step session files (console log output).
+- Added `data/sessions/` storage with `session_YYYYMMDD_HHMMSS.jsonl` naming.
+- Integrated recorder into GUI lifecycle (connect/start, tick/record, close/stop).
+- Added REC ● indicator lamp (green=recording, gray=off).
+- Added `LOAD REPLAY` button to open a JSONL replay file and log load status.
 
 ## Windows quick start
 1. Double click `start.bat`.
@@ -38,8 +41,16 @@ python -m compileall app main.py
 pytest -q
 ```
 
-## Next milestone
-- v0.4.0 is planned for Signal Recorder + Replay Dataset.
+## Recordings location
+- Session files are saved in `data/sessions/`.
+- File format: JSONL, one event per line.
+- Filename format: `session_YYYYMMDD_HHMMSS.jsonl`.
+
+## Replay usage (basic)
+1. Start GUI: `python main.py`.
+2. Click `LOAD REPLAY`.
+3. Select a file from `data/sessions/`.
+4. The app logs loaded file path and event count; replay engine currently logs playback to console only.
 
 
 ### v0.3.4 GUI upgrades
