@@ -1,7 +1,9 @@
 import time
+from typing import Callable
 
 from app.config import (
     FAST_WINDOW_MS,
+    INVALIDATION_COOLDOWN_MS,
     MAX_ALLOWED_SPREAD_PCT,
     MAX_SLOW_TREND_DROP_PCT,
     MAX_TREND_DROP_MID_PCT,
@@ -21,27 +23,39 @@ from app.signals import LiquidityGrabSignal
 
 
 class LiquidityGrabDetector:
-    def __init__(self) -> None:
+    def __init__(self, now_ms_provider: Callable[[], int] | None = None) -> None:
+        self._now_ms = now_ms_provider or (lambda: int(time.time() * 1000))
         self._phase = "NO_SETUP"
         self._sweep_low: float | None = None
         self._reclaim_level: float | None = None
         self._reclaim_since_ms: int | None = None
         self._sweep_started_ms: int | None = None
         self._last_invalid_reason = "-"
+        self._invalidated_until_ms: int = 0
 
     def reset(self, reason: str) -> None:
+        now_ms = self._now_ms()
         self._phase = "INVALIDATED"
         self._sweep_low = None
         self._reclaim_level = None
         self._reclaim_since_ms = None
         self._sweep_started_ms = None
         self._last_invalid_reason = reason
+        self._invalidated_until_ms = now_ms + INVALIDATION_COOLDOWN_MS
 
     def detect(self, metrics_fast: MarketMetrics, metrics_mid: MarketMetrics, metrics_slow: MarketMetrics, buffer: MarketBuffer) -> LiquidityGrabSignal:
-        now_ms = int(time.time() * 1000)
+        now_ms = self._now_ms()
         last = buffer.last()
         price_for_reclaim = last.ask if last else None
         reason_codes: list[str] = []
+
+        if now_ms < self._invalidated_until_ms:
+            self._phase = "INVALIDATED"
+            reason_codes.extend(["INVALIDATED", "INVALIDATION_COOLDOWN"])
+            return self._build(False, 0.0, reason_codes, "Invalidation cooldown", now_ms, price_for_reclaim)
+
+        if self._phase == "INVALIDATED" and now_ms >= self._invalidated_until_ms:
+            self._phase = "WATCHING_DROP"
 
         if not (metrics_fast.enough_data and metrics_mid.enough_data):
             self._phase = "NO_SETUP"
@@ -96,10 +110,17 @@ class LiquidityGrabDetector:
 
         drop_speed = metrics_fast.drop_pct / (FAST_WINDOW_MS / 1000)
         speed_ok = drop_speed >= MIN_IMPULSE_SPEED_PCT_PER_SEC
+        bounce_ok = metrics_fast.bounce_pct >= MIN_RECLAIM_BOUNCE_PCT
         reclaim_ok = price_for_reclaim is not None and self._reclaim_level is not None and price_for_reclaim >= self._reclaim_level
 
         if not speed_ok:
             reason_codes.append("IMPULSE_TOO_SLOW")
+
+        if not bounce_ok:
+            reason_codes.append("BOUNCE_TOO_SMALL")
+            self._phase = "LIQUIDITY_SWEEP" if self._reclaim_since_ms is None else "RECLAIM_WAIT"
+            score = self._score(metrics_fast, metrics_mid)
+            return self._build(False, score, reason_codes, "Bounce too small", now_ms, price_for_reclaim)
 
         if reclaim_ok:
             self._phase = "RECLAIM_WAIT"
@@ -114,7 +135,7 @@ class LiquidityGrabDetector:
             else:
                 reason_codes.append("RECLAIM_HOLDING")
         else:
-            if self._reclaim_since_ms is not None and self._sweep_started_ms is not None and (now_ms - self._sweep_started_ms) > RECLAIM_TIMEOUT_MS:
+            if self._sweep_started_ms is not None and (now_ms - self._sweep_started_ms) > RECLAIM_TIMEOUT_MS:
                 self.reset("RECLAIM_TIMEOUT")
                 reason_codes.extend(["RECLAIM_TIMEOUT", "INVALIDATED"])
                 return self._build(False, self._score(metrics_fast, metrics_mid), reason_codes, "Reclaim timeout", now_ms, price_for_reclaim)

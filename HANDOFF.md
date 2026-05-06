@@ -1,34 +1,45 @@
-# HANDOFF
+# bTest HANDOFF
 
 ## Version
-v0.3.1
+v0.3.2
+
+## Current status
+Detector/FSM testability and timing behavior are stabilized with deterministic unit tests.
 
 ## What was fixed
-- Stabilized detector sweep/reclaim lifecycle to avoid false positives from sweep-low overwrite.
-- Reclaim target now uses `sweep_low * (1 + MIN_RECLAIM_BOUNCE_PCT / 100)`.
-- Drop speed validation now confirms downward move only (`drop_pct / fast_window_sec`, no `abs`).
-- Added reset/invalidation flow and explicit reason codes for setup aging, reclaim timeout, slow-trend danger, and reclaim invalidation.
-- Expanded FSM mapping to include invalidated/reclaim phases and controlled cooldown behavior.
-- Extended GUI detector panel with setup age, reclaim hold, and last invalid reason.
+- Added injectable detector time provider (`now_ms_provider`).
+- Added explicit bounce hard-filter (`BOUNCE_TOO_SMALL`) before reclaim timer starts.
+- Added invalidation cooldown guard with `INVALIDATION_COOLDOWN_MS` and reason code `INVALIDATION_COOLDOWN`.
+- Updated FSM transitions so state can move out of `INVALIDATED` and enter `COOLDOWN` when signal disappears.
 
 ## Detector lifecycle
-NO_SETUP -> WATCHING_DROP -> LIQUIDITY_SWEEP -> RECLAIM_WAIT -> RECLAIM_CONFIRMED -> LONG_SIGNAL
+WATCHING_DROP -> LIQUIDITY_SWEEP -> RECLAIM_WAIT -> RECLAIM_CONFIRMED -> LONG_SIGNAL
 
-Invalidation path:
-- INVALIDATED on stale/high spread/dangerous trend/reclaim timeout/setup too old/new low after reclaim.
+Invalidation paths move detector to `INVALIDATED`, then cooldown gate applies before setup can restart.
 
-## Tests added
+## Config thresholds
+See `app/config.py` for:
+- `MIN_GRAB_DROP_PCT`
+- `MIN_RECLAIM_BOUNCE_PCT`
+- `RECLAIM_HOLD_MS`
+- `RECLAIM_TIMEOUT_MS`
+- `SETUP_MAX_AGE_MS`
+- `INVALIDATION_COOLDOWN_MS`
+
+## Tests
+Detector tests cover waiting data, small drop, small bounce, reclaim hold, slow trend filter, new-low invalidation, high spread reset, invalidation cooldown, setup age invalidation, and reclaim timeout invalidation.
+
+## Files changed
+- `app/detector.py`
+- `app/config.py`
+- `app/strategy/liquidity_grab_fsm.py`
 - `tests/test_detector.py`
-  - test_waiting_data_no_signal
-  - test_drop_too_small_no_signal
-  - test_sweep_then_reclaim_long_signal
-  - test_slow_trend_blocks_signal
-  - test_new_low_after_reclaim_invalidates
-  - test_high_spread_resets_setup
+- `README.md`
+- `HANDOFF.md`
 
 ## Known limitations
-- Tests are unit-level and do not emulate full WS timing dynamics.
-- Reclaim hold timing is still wall-clock dependent in detector runtime.
+- No execution engine/trading integration.
+- No recorder/replay dataset tooling yet.
 
 ## Next recommended step
 v0.4.0 — Signal Recorder + Replay Dataset
