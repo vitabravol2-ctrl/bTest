@@ -60,6 +60,7 @@ class SessionAnalyzer:
         p95_bounce_pct = float(hints.get("p95_bounce_pct", 0.0))
         near_signal_bounce_median = float(hints.get("near_signal_bounce_median", 0.0))
         p75_abs_speed = float(hints.get("p75_abs_speed", 0.0))
+        reclaim_hints = self.report_data.get("reclaim_hints", {})
 
         drop_value = max(0.005, p90_drop_pct * 0.70)
         if p95_drop_pct > 0:
@@ -98,6 +99,11 @@ class SessionAnalyzer:
                 f"pass_drop_bounce_reclaim={hints.get('pass_drop_bounce_reclaim', 0)} pass_hold_ok={hints.get('pass_hold_ok', 0)}",
                 f"max_drop_pct={hints.get('max_drop_pct', 0.0):.5f}",
             ],
+            "runtime_params": {
+                "min_reclaim_hold_ms": int(reclaim_hints.get("suggested_min_reclaim_hold_ms", 150)),
+                "reclaim_window_ms": int(reclaim_hints.get("suggested_reclaim_window_ms", 3000)),
+                "invalidation_cooldown_ms": int(reclaim_hints.get("suggested_invalidation_cooldown_ms", 1000)),
+            },
         }
         return suggested
 
@@ -155,6 +161,20 @@ class SessionAnalyzer:
         pass_drop_bounce = 0
         pass_drop_bounce_reclaim = 0
         pass_hold = 0
+        sweep_events = [e for e in self.events if str(e.get("phase", "")) == "LIQUIDITY_SWEEP"]
+        reclaim_wait_events = [e for e in self.events if str(e.get("phase", "")) == "RECLAIM_WAIT"]
+        invalidated_after_sweep = [e for e in self.events if str(e.get("phase", "")) == "INVALIDATED"]
+        detected_after_sweep = [e for e in self.events if bool(e.get("detected", False)) and str(e.get("phase", "")) in {"RECLAIM_WAIT", "SIGNAL_READY", "SIGNALLED"}]
+        setup_age_values = [float(e.get("setup_age_ms", 0.0)) for e in self.events if float(e.get("setup_age_ms", 0.0)) > 0]
+        reclaim_hold_values = [float(e.get("reclaim_hold_ms", 0.0)) for e in self.events if float(e.get("reclaim_hold_ms", 0.0)) > 0]
+        post_sweep = [e for e in self.events if str(e.get("phase", "")) in {"RECLAIM_WAIT", "INVALIDATED", "BACK_TO_WATCHING", "SIGNAL_READY", "SIGNALLED"}]
+        post_sweep_blockers: Counter[str] = Counter()
+        for e in post_sweep:
+            debug = e.get("debug", {}) or {}
+            for key in ("drop_ok", "bounce_ok", "speed_ok", "reclaim_ok", "hold_ok", "slow_trend_ok"):
+                if not bool(debug.get(key, False)):
+                    post_sweep_blockers[key] += 1
+                    break
         for e in self.events:
             debug = e.get("debug", {}) or {}
             if bool(debug.get("drop_ok", False)):
@@ -195,6 +215,34 @@ class SessionAnalyzer:
                 "pass_drop_bounce_reclaim": pass_drop_bounce_reclaim,
                 "pass_hold_ok": pass_hold,
             },
+            "post_sweep_analysis": {
+                "total_sweeps": len(sweep_events),
+                "reclaim_wait_count": len(reclaim_wait_events),
+                "invalidated_after_sweep_count": len(invalidated_after_sweep),
+                "detected_after_sweep_count": len(detected_after_sweep),
+                "reclaim_success_rate": (len(reclaim_wait_events) / len(sweep_events) * 100.0) if sweep_events else 0.0,
+                "signal_success_rate": (len(detected_after_sweep) / len(sweep_events) * 100.0) if sweep_events else 0.0,
+                "avg_setup_age_ms": mean(setup_age_values) if setup_age_values else 0.0,
+                "median_setup_age_ms": float(median(setup_age_values)) if setup_age_values else 0.0,
+                "p75_setup_age_ms": self._p75(setup_age_values) if setup_age_values else 0.0,
+                "median_reclaim_hold_ms": float(median(reclaim_hold_values)) if reclaim_hold_values else 0.0,
+                "p75_reclaim_hold_ms": self._p75(reclaim_hold_values) if reclaim_hold_values else 0.0,
+                "max_reclaim_hold_ms": max(reclaim_hold_values) if reclaim_hold_values else 0.0,
+                "top_invalidation_reasons": dict(Counter(str(e.get("last_invalid_reason", "UNKNOWN")) for e in invalidated_after_sweep).most_common(5)),
+                "top_blockers_after_sweep": dict(post_sweep_blockers.most_common(5)),
+                "top_post_sweep_events": sorted(
+                    [{"ts": e.get("ts"), "score": float(e.get("score", 0.0)), "phase": e.get("phase", "UNKNOWN")} for e in post_sweep],
+                    key=lambda x: x["score"],
+                    reverse=True,
+                )[:20],
+            },
+        }
+        p75_hold = data["post_sweep_analysis"]["p75_reclaim_hold_ms"]
+        p75_setup = data["post_sweep_analysis"]["p75_setup_age_ms"]
+        data["reclaim_hints"] = {
+            "suggested_min_reclaim_hold_ms": int(max(100, min(800, p75_hold * 0.70))) if p75_hold > 0 else 150,
+            "suggested_reclaim_window_ms": int(max(1000, min(8000, p75_setup * 1.50))) if p75_setup > 0 else 3000,
+            "suggested_invalidation_cooldown_ms": 1000,
         }
         self.report_data = data
         suggested = self.suggest_profile()
@@ -258,10 +306,13 @@ class SessionAnalyzer:
         suggested_stats = _pass_counts(suggested)
         total_events = len(self.events)
         sweeps_found = sum(1 for e in self.events if str(e.get("phase", "")) == "LIQUIDITY_SWEEP")
+        post = self.report_data.get("post_sweep_analysis", {})
+        reclaim_wait = int(post.get("reclaim_wait_count", 0))
+        hold_blockers = int((self.report_data.get("near_signal_blockers", {}) or {}).get("hold_ok", 0))
+        detected_after_sweep = int(post.get("detected_after_sweep_count", 0))
         data_is_small = (
             total_events < min_research_ticks
             or sweeps_found < min_sweeps_for_confidence
-            or max(current_stats["near"], suggested_stats["near"]) < min_near_signals_for_confidence
         )
         delta_near = suggested_stats["near"] - current_stats["near"]
         too_soft = (
@@ -273,6 +324,18 @@ class SessionAnalyzer:
             recommendation = "NEED_MORE_DATA"
             confidence = "LOW"
             reason = "insufficient session size or setup count"
+        elif sweeps_found > 0 and reclaim_wait <= max(1, sweeps_found // 20) and delta_near <= 0:
+            recommendation = "RECLAIM_WEAK"
+            confidence = "MEDIUM"
+            reason = "many sweeps but very few reclaim waits"
+        elif reclaim_wait > 0 and detected_after_sweep == 0 and hold_blockers > 0:
+            recommendation = "HOLD_TOO_STRICT"
+            confidence = "HIGH"
+            reason = "reclaim exists but HOLD blocks all signal candidates"
+        elif reclaim_wait > 0 and detected_after_sweep == 0:
+            recommendation = "FINAL_SIGNAL_BLOCKED"
+            confidence = "MEDIUM"
+            reason = "reclaim/hold path exists but no final signal detected"
         elif delta_near > 0 and not too_soft:
             recommendation = "APPLY_RECOMMENDED"
             confidence = "HIGH"
@@ -317,6 +380,8 @@ class SessionAnalyzer:
             lines.append("    - none")
 
         hints = data["threshold_hints"]
+        post = data.get("post_sweep_analysis", {})
+        reclaim_hints = data.get("reclaim_hints", {})
         lines.extend(["", "Threshold hints:", f"  max_drop_pct: {hints['max_drop_pct']:.5f}", f"  p90_drop_pct: {hints['p90_drop_pct']:.5f}", f"  p95_drop_pct: {hints['p95_drop_pct']:.5f}", f"  max_bounce_pct: {hints['max_bounce_pct']:.5f}", f"  p90_bounce_pct: {hints['p90_bounce_pct']:.5f}", f"  p95_bounce_pct: {hints['p95_bounce_pct']:.5f}", f"  near_signal_bounce_p75: {hints['near_signal_bounce_p75']:.5f}", f"  near_signal_bounce_median: {hints['near_signal_bounce_median']:.5f}", f"  max_speed: {hints['max_speed']:.5f}", f"  p95_speed: {hints['p95_speed']:.5f}", f"  p75_abs_speed: {hints['p75_abs_speed']:.5f}", f"  pass_drop_ok: {hints['pass_drop_ok']}", f"  pass_drop_bounce: {hints['pass_drop_bounce']}", f"  pass_drop_bounce_reclaim: {hints['pass_drop_bounce_reclaim']}", f"  pass_hold_ok: {hints['pass_hold_ok']}"])
 
         suggested = data.get("suggested_profile") or self.suggest_profile()
@@ -343,6 +408,26 @@ class SessionAnalyzer:
                     f"  reason: {validation.get('reason', '-')}",
                 ]
             )
+        lines.extend(
+            [
+                "",
+                "POST-SWEEP RECLAIM/HOLD ANALYSIS",
+                f"  total sweeps: {post.get('total_sweeps', 0)}",
+                f"  reclaim wait count: {post.get('reclaim_wait_count', 0)}",
+                f"  invalidated after sweep: {post.get('invalidated_after_sweep_count', 0)}",
+                f"  detected after sweep: {post.get('detected_after_sweep_count', 0)}",
+                f"  reclaim success rate: {post.get('reclaim_success_rate', 0.0):.2f}%",
+                f"  signal success rate: {post.get('signal_success_rate', 0.0):.2f}%",
+                f"  median/p75 setup age ms: {post.get('median_setup_age_ms', 0.0):.2f}/{post.get('p75_setup_age_ms', 0.0):.2f}",
+                f"  median/p75 reclaim hold ms: {post.get('median_reclaim_hold_ms', 0.0):.2f}/{post.get('p75_reclaim_hold_ms', 0.0):.2f}",
+                f"  top invalidation reasons: {post.get('top_invalidation_reasons', {})}",
+                f"  top blockers after sweep: {post.get('top_blockers_after_sweep', {})}",
+                f"  suggested min reclaim hold ms: {reclaim_hints.get('suggested_min_reclaim_hold_ms', 150)}",
+                f"  suggested reclaim window ms: {reclaim_hints.get('suggested_reclaim_window_ms', 3000)}",
+                f"  suggested invalidation cooldown ms: {reclaim_hints.get('suggested_invalidation_cooldown_ms', 1000)}",
+                f"  conclusion: {validation.get('recommendation', 'NEED_MORE_DATA') if validation else 'NEED_MORE_DATA'}",
+            ]
+        )
         return "\n".join(lines) + "\n"
 
     def export_report(self, path: str | Path) -> Path:

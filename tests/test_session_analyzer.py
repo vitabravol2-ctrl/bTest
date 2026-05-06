@@ -124,7 +124,8 @@ def test_validation_needs_more_data_when_session_too_small(tmp_path):
     write_jsonl(p, [{"drop_pct": 0.04, "bounce_pct": 0.03, "speed": 0.004, "score": 61, "detected": False, "phase": "WATCHING_DROP"} for _ in range(10)])
     analyzer = SessionAnalyzer()
     analyzer.load(p)
-    result = analyzer.validate_calibration_before_after({}, {"name": "CALIBRATED"})
+    current = {"name": "CUSTOM", "min_grab_drop_pct": 0.01, "min_reclaim_bounce_pct": 0.01, "min_impulse_speed_pct_per_sec": 0.001, "signal_min_score": 70}
+    result = analyzer.validate_calibration_before_after(current, {"name": "CALIBRATED"})
     assert result["recommendation"] == "NEED_MORE_DATA"
     assert result["confidence"] == "LOW"
 
@@ -134,7 +135,8 @@ def test_validation_does_not_auto_apply_profile(tmp_path):
     write_jsonl(p, [{"drop_pct": 0.04, "bounce_pct": 0.03, "speed": 0.004, "score": 61, "detected": False, "phase": "WATCHING_DROP"} for _ in range(320)])
     analyzer = SessionAnalyzer()
     analyzer.load(p)
-    result = analyzer.validate_calibration_before_after({}, {"name": "CALIBRATED"})
+    current = {"name": "CUSTOM", "min_grab_drop_pct": 0.01, "min_reclaim_bounce_pct": 0.01, "min_impulse_speed_pct_per_sec": 0.001, "signal_min_score": 70}
+    result = analyzer.validate_calibration_before_after(current, {"name": "CALIBRATED"})
     assert result["auto_apply"] is False
 
 
@@ -145,3 +147,45 @@ def test_report_contains_calibration_validation_section(tmp_path):
     analyzer.load(p)
     analyzer.analyze()
     assert "CALIBRATION VALIDATION" in analyzer.report_text
+
+
+def test_post_sweep_analysis_counts_sweeps_and_reclaims(tmp_path):
+    p = tmp_path / "session_post_sweep.jsonl"
+    write_jsonl(
+        p,
+        [
+            {"phase": "LIQUIDITY_SWEEP", "score": 30, "detected": False, "setup_age_ms": 1000, "reclaim_hold_ms": 0, "debug": {}},
+            {"phase": "RECLAIM_WAIT", "score": 60, "detected": False, "setup_age_ms": 1200, "reclaim_hold_ms": 200, "debug": {"drop_ok": True, "bounce_ok": True, "speed_ok": True, "reclaim_ok": True, "hold_ok": False, "slow_trend_ok": True}},
+            {"phase": "INVALIDATED", "score": 40, "detected": False, "last_invalid_reason": "HOLD_TIMEOUT", "setup_age_ms": 1300, "reclaim_hold_ms": 300, "debug": {"drop_ok": True, "bounce_ok": True, "speed_ok": True, "reclaim_ok": True, "hold_ok": False, "slow_trend_ok": True}},
+        ],
+    )
+    analyzer = SessionAnalyzer(); analyzer.load(p); data = analyzer.analyze()
+    post = data["post_sweep_analysis"]
+    assert post["total_sweeps"] == 1
+    assert post["reclaim_wait_count"] == 1
+    assert post["invalidated_after_sweep_count"] == 1
+
+
+def test_reclaim_hold_hints_use_p75(tmp_path):
+    p = tmp_path / "session_reclaim_hints.jsonl"
+    write_jsonl(p, [{"phase": "RECLAIM_WAIT", "score": 10, "detected": False, "reclaim_hold_ms": v, "setup_age_ms": 1000 + v, "debug": {}} for v in [100, 200, 300, 400]])
+    analyzer = SessionAnalyzer(); analyzer.load(p); data = analyzer.analyze()
+    assert data["reclaim_hints"]["suggested_min_reclaim_hold_ms"] == int(300 * 0.70)
+
+
+def test_report_contains_post_sweep_section(tmp_path):
+    p = tmp_path / "session_report_post_sweep.jsonl"
+    write_jsonl(p, [{"phase": "LIQUIDITY_SWEEP", "score": 10, "detected": False, "debug": {}}])
+    analyzer = SessionAnalyzer(); analyzer.load(p); analyzer.analyze()
+    assert "POST-SWEEP RECLAIM/HOLD ANALYSIS" in analyzer.report_text
+
+
+def test_validation_detects_hold_too_strict(tmp_path):
+    p = tmp_path / "session_hold_strict.jsonl"
+    rows = [{"phase": "LIQUIDITY_SWEEP", "drop_pct": 0.05, "bounce_pct": 0.03, "speed": 0.005, "score": 55, "detected": False, "debug": {"drop_ok": True, "bounce_ok": True, "speed_ok": True, "reclaim_ok": True, "hold_ok": False, "slow_trend_ok": True}} for _ in range(320)]
+    rows += [{"phase": "RECLAIM_WAIT", "drop_pct": 0.05, "bounce_pct": 0.03, "speed": 0.005, "score": 58, "detected": False, "debug": {"drop_ok": True, "bounce_ok": True, "speed_ok": True, "reclaim_ok": True, "hold_ok": False, "slow_trend_ok": True}} for _ in range(20)]
+    write_jsonl(p, rows)
+    analyzer = SessionAnalyzer(); analyzer.load(p); analyzer.analyze()
+    current = {"name": "CUSTOM", "min_grab_drop_pct": 0.01, "min_reclaim_bounce_pct": 0.01, "min_impulse_speed_pct_per_sec": 0.001, "signal_min_score": 70}
+    result = analyzer.validate_calibration_before_after(current, {"name": "CALIBRATED"})
+    assert result["recommendation"] == "HOLD_TOO_STRICT"
