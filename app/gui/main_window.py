@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -60,6 +61,8 @@ from app.binance_settings import BinanceSettings, load_settings, save_settings
 from app.binance_client import BinanceClient
 from app.binance_filters import validate_market_buy_quote
 
+POSITION_PATH = Path("data/settings/live_position.json")
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -80,6 +83,8 @@ class MainWindow(QMainWindow):
         self.binance_settings = load_settings()
         self.binance_client = BinanceClient(self.binance_settings)
         self.last_binance_filters = []
+        self.live_position: dict | None = None
+        self.last_balance_usdt: float = 0.0
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
@@ -117,7 +122,12 @@ class MainWindow(QMainWindow):
         self.chk_testnet.setChecked(self.binance_settings.use_testnet)
         self.spin_budget.setValue(float(self.binance_settings.quote_budget_usdt))
         self.spin_min_trade.setValue(float(self.binance_settings.min_trade_usdt))
+        self.spin_max_buy.setValue(float(self.binance_settings.max_single_buy_usdt))
+        self.spin_tp_pct.setValue(float(self.binance_settings.tp_pct))
+        self.spin_sl_pct.setValue(float(self.binance_settings.sl_pct))
+        self.chk_auto_exit.setChecked(self.binance_settings.auto_exit_enabled)
         self.chk_live.setChecked(self.binance_settings.live_enabled)
+        self._load_saved_position()
 
     def on_profile_changed(self, profile_name: str) -> None:
         self._selected_profile_name = profile_name
@@ -486,11 +496,12 @@ class MainWindow(QMainWindow):
         binance_card, bg = self._make_card("BINANCE")
         self.edit_api_key = QLineEdit(); self.edit_api_key.setPlaceholderText("API Key")
         self.edit_api_secret = QLineEdit(); self.edit_api_secret.setEchoMode(QLineEdit.EchoMode.Password)
-        self.chk_testnet = QCheckBox("Use Testnet"); self.chk_testnet.setChecked(True)
-        self.spin_budget = QDoubleSpinBox(); self.spin_budget.setRange(0.0, 1_000_000.0); self.spin_budget.setValue(25.0)
-        self.spin_min_trade = QDoubleSpinBox(); self.spin_min_trade.setRange(0.0, 1_000_000.0); self.spin_min_trade.setValue(10.0)
+        self.chk_testnet = QCheckBox("Use Testnet")
+        self.spin_budget = QDoubleSpinBox(); self.spin_budget.setRange(0.0, 1_000_000.0); self.spin_budget.setValue(20.0)
+        self.spin_min_trade = QDoubleSpinBox(); self.spin_min_trade.setRange(0.0, 1_000_000.0); self.spin_min_trade.setValue(5.0)
+        self.spin_max_buy = QDoubleSpinBox(); self.spin_max_buy.setRange(0.0, 1_000_000.0); self.spin_max_buy.setValue(20.0)
         self.chk_live = QCheckBox("LIVE ENABLE")
-        self.edit_confirm = QLineEdit(); self.edit_confirm.setPlaceholderText("Type BUY")
+        self.edit_confirm = QLineEdit(); self.edit_confirm.setPlaceholderText("Type BUY BTCUSDT")
         self.btn_save_keys = QPushButton("Save keys")
         self.btn_test_conn = QPushButton("Test connection")
         self.btn_load_bal = QPushButton("Load balances")
@@ -498,7 +509,14 @@ class MainWindow(QMainWindow):
         self.btn_validate_order = QPushButton("Validate order")
         self.btn_test_order = QPushButton("Send TEST ORDER")
         self.btn_manual_buy = QPushButton("MANUAL BUY")
+        self.btn_sell_now = QPushButton("SELL NOW")
         self.btn_manual_buy.setEnabled(False)
+        self.btn_sell_now.setEnabled(False)
+        self.chk_auto_exit = QCheckBox("AUTO_EXIT_ENABLED")
+        self.spin_tp_pct = QDoubleSpinBox(); self.spin_tp_pct.setRange(0.001, 10.0); self.spin_tp_pct.setDecimals(3); self.spin_tp_pct.setValue(0.05)
+        self.spin_sl_pct = QDoubleSpinBox(); self.spin_sl_pct.setRange(-10.0, -0.001); self.spin_sl_pct.setDecimals(3); self.spin_sl_pct.setValue(-0.03)
+        self.lbl_position = QLabel("No position")
+        self.lbl_pnl = QLabel("PnL: -")
         self.btn_save_keys.clicked.connect(self._save_binance_settings)
         self.btn_test_conn.clicked.connect(self._test_binance_connection)
         self.btn_load_bal.clicked.connect(self._load_binance_balances)
@@ -506,17 +524,24 @@ class MainWindow(QMainWindow):
         self.btn_validate_order.clicked.connect(self._validate_binance_order)
         self.btn_test_order.clicked.connect(self._send_binance_test_order)
         self.btn_manual_buy.clicked.connect(self._manual_live_buy)
+        self.btn_sell_now.clicked.connect(self._manual_sell_now)
         bg.addWidget(QLabel("API Key"), 0, 0); bg.addWidget(self.edit_api_key, 0, 1)
         bg.addWidget(QLabel("API Secret"), 1, 0); bg.addWidget(self.edit_api_secret, 1, 1)
         bg.addWidget(self.chk_testnet, 2, 0, 1, 2)
         bg.addWidget(QLabel("Budget USDT"), 3, 0); bg.addWidget(self.spin_budget, 3, 1)
         bg.addWidget(QLabel("Min trade USDT"), 4, 0); bg.addWidget(self.spin_min_trade, 4, 1)
-        bg.addWidget(self.chk_live, 5, 0, 1, 2)
-        bg.addWidget(self.edit_confirm, 6, 0, 1, 2)
-        bg.addWidget(self.btn_save_keys, 7, 0); bg.addWidget(self.btn_test_conn, 7, 1)
-        bg.addWidget(self.btn_load_bal, 8, 0); bg.addWidget(self.btn_load_filters, 8, 1)
-        bg.addWidget(self.btn_validate_order, 9, 0); bg.addWidget(self.btn_test_order, 9, 1)
-        bg.addWidget(self.btn_manual_buy, 10, 0, 1, 2)
+        bg.addWidget(QLabel("Max single buy USDT"), 5, 0); bg.addWidget(self.spin_max_buy, 5, 1)
+        bg.addWidget(self.chk_live, 6, 0, 1, 2)
+        bg.addWidget(self.edit_confirm, 7, 0, 1, 2)
+        bg.addWidget(QLabel("TP %"), 8, 0); bg.addWidget(self.spin_tp_pct, 8, 1)
+        bg.addWidget(QLabel("SL %"), 9, 0); bg.addWidget(self.spin_sl_pct, 9, 1)
+        bg.addWidget(self.chk_auto_exit, 10, 0, 1, 2)
+        bg.addWidget(self.btn_save_keys, 11, 0); bg.addWidget(self.btn_test_conn, 11, 1)
+        bg.addWidget(self.btn_load_bal, 12, 0); bg.addWidget(self.btn_load_filters, 12, 1)
+        bg.addWidget(self.btn_validate_order, 13, 0); bg.addWidget(self.btn_test_order, 13, 1)
+        bg.addWidget(self.btn_manual_buy, 14, 0); bg.addWidget(self.btn_sell_now, 14, 1)
+        bg.addWidget(self.lbl_position, 15, 0, 1, 2)
+        bg.addWidget(self.lbl_pnl, 16, 0, 1, 2)
         body.addWidget(binance_card)
         layout.addLayout(body, 1)
         layout.addWidget(self.log_view)
@@ -637,6 +662,15 @@ class MainWindow(QMainWindow):
         self.lbl_paper_net_pnl_pct.setText(f"{float(pstats['net_pnl_pct']):.3f}%")
         self.lbl_paper_equity.setText(f"{float(pstats['equity_usdt']):.3f}")
         self.lbl_paper_last_result.setText(str(pstats["last_trade_result"]))
+        if self.live_position:
+            entry = float(self.live_position.get("entry_price", 0.0))
+            qty = float(self.live_position.get("qty", 0.0))
+            pnl_usdt = (tick.bid - entry) * qty
+            pnl_pct = ((tick.bid / entry - 1.0) * 100.0) if entry else 0.0
+            self.lbl_pnl.setText(f"PnL {pnl_pct:.4f}% / {pnl_usdt:.4f} USDT")
+            if self.chk_auto_exit.isChecked() and (pnl_pct >= float(self.spin_tp_pct.value()) or pnl_pct <= float(self.spin_sl_pct.value())):
+                self._manual_sell_now()
+
 
         self.lbl_fast_drop.setText(f"{fast_metrics.drop_pct:.5f}")
         self.lbl_fast_bounce.setText(f"{fast_metrics.bounce_pct:.5f}")
@@ -844,10 +878,14 @@ class MainWindow(QMainWindow):
         self.binance_settings.use_testnet = self.chk_testnet.isChecked()
         self.binance_settings.quote_budget_usdt = float(self.spin_budget.value())
         self.binance_settings.min_trade_usdt = float(self.spin_min_trade.value())
+        self.binance_settings.max_single_buy_usdt = float(self.spin_max_buy.value())
+        self.binance_settings.tp_pct = float(self.spin_tp_pct.value())
+        self.binance_settings.sl_pct = float(self.spin_sl_pct.value())
+        self.binance_settings.auto_exit_enabled = self.chk_auto_exit.isChecked()
         self.binance_settings.live_enabled = self.chk_live.isChecked()
         save_settings(self.binance_settings)
         self.binance_client = BinanceClient(self.binance_settings)
-        self.logger.info("Binance settings saved. key=%s testnet=%s", self.binance_settings.masked_api_key(), self.binance_settings.use_testnet)
+        self.logger.info("audit: key saved key=%s testnet=%s", self.binance_settings.masked_api_key(), self.binance_settings.use_testnet)
 
     def _test_binance_connection(self) -> None:
         self.logger.info("Binance ping=%s time=%s", self.binance_client.ping(), self.binance_client.server_time())
@@ -855,7 +893,8 @@ class MainWindow(QMainWindow):
     def _load_binance_balances(self) -> None:
         account = self.binance_client.get_account()
         balances = [b for b in account.get("balances", []) if b.get("asset") in {"USDT", "BTC"}]
-        self.logger.info("Binance balances loaded: %s", balances)
+        self.last_balance_usdt = float(next((b.get("free", 0.0) for b in balances if b.get("asset") == "USDT"), 0.0))
+        self.logger.info("audit: balance loaded %s", balances)
 
     def _load_binance_filters(self) -> None:
         self.last_binance_filters = self.binance_client.get_symbol_filters(self.binance_settings.symbol)
@@ -863,20 +902,76 @@ class MainWindow(QMainWindow):
 
     def _validate_binance_order(self) -> None:
         check = validate_market_buy_quote(self.last_binance_filters, float(self.spin_budget.value()))
-        ok = check["ok"] and float(self.spin_budget.value()) >= float(self.spin_min_trade.value())
-        if ok and self.chk_live.isChecked() and self.edit_confirm.text().strip() == "BUY":
+        budget = float(self.spin_budget.value())
+        ok = check["ok"] and budget >= float(self.spin_min_trade.value()) and budget <= float(self.spin_max_buy.value())
+        if ok and self.chk_live.isChecked() and self._typed_confirm_ok() and self.live_position is None:
             self.btn_manual_buy.setEnabled(True)
         else:
             self.btn_manual_buy.setEnabled(False)
-        self.logger.info("Order validate: %s", check)
+        self.logger.info("audit: buy preview %s", {"check": check, "budget": budget, "has_position": self.live_position is not None})
 
     def _send_binance_test_order(self) -> None:
         r = self.binance_client.test_order_buy_market(self.binance_settings.symbol, float(self.spin_budget.value()))
         self.logger.info("Binance test order result: %s", r)
 
     def _manual_live_buy(self) -> None:
-        r = self.binance_client.live_order_buy_market(self.binance_settings.symbol, float(self.spin_budget.value()), manual_confirm=(self.edit_confirm.text().strip() == "BUY"))
-        self.logger.warning("Manual live BUY result: %s", r)
+        budget = float(self.spin_budget.value())
+        if not self._typed_confirm_ok():
+            self.logger.error("audit: error live buy blocked without confirm")
+            return
+        if self.live_position is not None:
+            self.logger.error("audit: error live buy blocked if already position open")
+            return
+        if budget > float(self.spin_max_buy.value()) or budget > float(self.binance_settings.quote_budget_usdt):
+            self.logger.error("audit: error live buy blocked if over budget")
+            return
+        self.logger.info("audit: buy sent")
+        r = self.binance_client.live_order_buy_market(self.binance_settings.symbol, budget, manual_confirm=True)
+        fills = r.get("fills", []) if isinstance(r, dict) else []
+        spent = float(r.get("cummulativeQuoteQty", budget)) if isinstance(r, dict) else budget
+        qty = float(r.get("executedQty", 0.0)) if isinstance(r, dict) else 0.0
+        fee = sum(float(f.get("commission", 0.0)) for f in fills)
+        entry_price = (spent / qty) if qty else 0.0
+        self.live_position = {"symbol": self.binance_settings.symbol, "qty": qty, "entry_price": entry_price, "spent": spent, "fee": fee}
+        self._persist_position()
+        self.btn_sell_now.setEnabled(True)
+        self.lbl_position.setText(f"Entry={entry_price:.2f} qty={qty:.6f} spent={spent:.4f} fee={fee:.6f}")
+        self.logger.warning("audit: buy filled %s", self.live_position)
+        self.logger.info("audit: watcher started")
+
+
+    def _load_saved_position(self) -> None:
+        try:
+            self.live_position = json.loads(POSITION_PATH.read_text(encoding="utf-8"))
+            self.lbl_position.setText(f"Position loaded: {self.live_position.get('symbol')} qty={self.live_position.get('qty')}")
+            self.btn_sell_now.setEnabled(True)
+            self.logger.info("audit: position saved/restored")
+        except Exception:
+            self.live_position = None
+
+    def _persist_position(self) -> None:
+        POSITION_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if self.live_position is None:
+            if POSITION_PATH.exists():
+                POSITION_PATH.unlink()
+            return
+        POSITION_PATH.write_text(json.dumps(self.live_position, indent=2), encoding="utf-8")
+
+    def _typed_confirm_ok(self) -> bool:
+        return self.edit_confirm.text().strip().upper() == f"BUY {self.binance_settings.symbol}"
+
+    def _manual_sell_now(self) -> None:
+        if not self.live_position:
+            return
+        qty = float(self.live_position.get("qty", 0.0))
+        if qty <= 0:
+            return
+        self.logger.info("audit: sell sent")
+        r = self.binance_client.signed_request("POST", "/api/v3/order", {"symbol": self.binance_settings.symbol, "side": "SELL", "type": "MARKET", "quantity": qty})
+        self.logger.warning("audit: sell filled %s", r)
+        self.live_position = None
+        self._persist_position()
+        self.btn_sell_now.setEnabled(False)
 
     def refresh_age(self) -> None:
         now = int(time.time() * 1000)
