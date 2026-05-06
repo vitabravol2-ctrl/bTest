@@ -55,7 +55,7 @@ from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
 from app.calibration import CalibrationSuggestion
 from app.profiles import PROFILES
 from app.profiles import ThresholdProfile
-from app.profiles import CUSTOM
+from app.profiles import CUSTOM, CUSTOM_EXTREME_RESEARCH
 from app.research_pipeline import AutoResearchPipeline
 
 class MainWindow(QMainWindow):
@@ -212,7 +212,7 @@ class MainWindow(QMainWindow):
 
         top.addStretch(1)
         self.profile_combo = QComboBox()
-        self.profile_combo.addItems(["CUSTOM", "CONSERVATIVE", "BALANCED", "SENSITIVE", "DEBUG_ULTRA"])
+        self.profile_combo.addItems(["CUSTOM", "CUSTOM_EXTREME_RESEARCH", "CONSERVATIVE", "BALANCED", "SENSITIVE", "DEBUG_ULTRA"])
         self.profile_combo.currentTextChanged.connect(self.on_profile_changed)
         top.addWidget(QLabel("Profile"))
         top.addWidget(self.profile_combo)
@@ -431,8 +431,10 @@ class MainWindow(QMainWindow):
         self.lbl_paper_losses = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         self.lbl_paper_timeouts = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         self.lbl_paper_winrate = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
-        self.lbl_paper_avg_pnl = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
-        self.lbl_paper_total_pnl = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_gross_pnl = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_net_pnl = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_net_pnl_pct = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_paper_equity = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         self.lbl_paper_last_result = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         for title, label in (
             ("Status", self.lbl_research_status),
@@ -454,8 +456,10 @@ class MainWindow(QMainWindow):
             ("Losses", self.lbl_paper_losses),
             ("Timeouts", self.lbl_paper_timeouts),
             ("Winrate", self.lbl_paper_winrate),
-            ("Avg PnL %", self.lbl_paper_avg_pnl),
-            ("Total PnL %", self.lbl_paper_total_pnl),
+            ("Gross PnL USDT", self.lbl_paper_gross_pnl),
+            ("Net PnL USDT", self.lbl_paper_net_pnl),
+            ("Net PnL %", self.lbl_paper_net_pnl_pct),
+            ("Equity USDT", self.lbl_paper_equity),
             ("Last trade", self.lbl_paper_last_result),
         ):
             ag.addWidget(QLabel(title), row, 0); ag.addWidget(label, row, 1); row += 1
@@ -569,7 +573,7 @@ class MainWindow(QMainWindow):
         if quality is not None:
             opened = self.paper_simulator.open_long(signal.ts_ms, signal.trigger_price or tick.ask)
         closed_trade = self.paper_simulator.on_tick(tick.ts_ms, tick.bid, tick.ask)
-        self.recorder.record_tick(tick, fast_metrics, signal, result.state, self.detector.profile, signal_quality=quality, paper_trade_opened=opened, paper_trade_result=(closed_trade.result if closed_trade else None))
+        self.recorder.record_tick(tick, fast_metrics, signal, result.state, self.detector.profile, signal_quality=quality, paper_trade_opened=opened, paper_trade_result=(closed_trade.result if closed_trade else None), paper_trade=closed_trade, paper_stats=self.paper_simulator.stats())
         self._process_auto_research_tick(tick.ts_ms, signal)
         pstats = self.paper_simulator.stats()
         self.lbl_paper_trades.setText(str(pstats["paper_trades"]))
@@ -577,8 +581,10 @@ class MainWindow(QMainWindow):
         self.lbl_paper_losses.setText(str(pstats["losses"]))
         self.lbl_paper_timeouts.setText(str(pstats["timeouts"]))
         self.lbl_paper_winrate.setText(f"{float(pstats['winrate']):.1f}%")
-        self.lbl_paper_avg_pnl.setText(f"{float(pstats['avg_pnl']):.3f}")
-        self.lbl_paper_total_pnl.setText(f"{float(pstats['total_pnl']):.3f}")
+        self.lbl_paper_gross_pnl.setText(f"{float(pstats['gross_pnl_usdt']):.3f}")
+        self.lbl_paper_net_pnl.setText(f"{float(pstats['net_pnl_usdt']):.3f}")
+        self.lbl_paper_net_pnl_pct.setText(f"{float(pstats['net_pnl_pct']):.3f}%")
+        self.lbl_paper_equity.setText(f"{float(pstats['equity_usdt']):.3f}")
         self.lbl_paper_last_result.setText(str(pstats["last_trade_result"]))
 
         self.lbl_fast_drop.setText(f"{fast_metrics.drop_pct:.5f}")
@@ -908,9 +914,10 @@ class MainWindow(QMainWindow):
         btn_apply = QPushButton("Apply to current session")
         btn_save_custom = QPushButton("Save as CUSTOM")
         btn_reset = QPushButton("Reset to selected profile")
+        btn_extreme = QPushButton("Extreme Research Defaults")
         btn_close = QPushButton("Close")
         row = QHBoxLayout()
-        for btn in (btn_apply, btn_save_custom, btn_reset, btn_close):
+        for btn in (btn_apply, btn_save_custom, btn_reset, btn_extreme, btn_close):
             row.addWidget(btn)
         layout.addLayout(row)
 
@@ -939,6 +946,18 @@ class MainWindow(QMainWindow):
         btn_apply.clicked.connect(lambda: _apply("CUSTOM"))
         btn_save_custom.clicked.connect(lambda: _apply("CUSTOM"))
         btn_reset.clicked.connect(_reset)
+
+        def _extreme_defaults() -> None:
+            values = {"min_grab_drop_pct":0.006,"min_reclaim_bounce_pct":0.003,"min_impulse_speed_pct_per_sec":0.0005,"signal_min_score":45.0,"max_trend_drop_mid_pct":0.250,"max_slow_trend_drop_pct":0.400,"unlock_p90_bounce_pct":0.012}
+            for k,v in values.items():
+                if k in fields:
+                    fields[k].setValue(v)
+            chk_unlock.setChecked(True); chk_adaptive_hold.setChecked(True); chk_paper_sim.setChecked(True)
+            self.paper_simulator.enabled = True
+            self.append_log("EXTREME RESEARCH — may create noisy paper signals, no live trading.")
+            _apply("CUSTOM_EXTREME_RESEARCH")
+
+        btn_extreme.clicked.connect(_extreme_defaults)
         btn_close.clicked.connect(dialog.close)
         dialog.exec()
 
