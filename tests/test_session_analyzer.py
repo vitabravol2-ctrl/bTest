@@ -161,9 +161,9 @@ def test_post_sweep_analysis_counts_sweeps_and_reclaims(tmp_path):
     )
     analyzer = SessionAnalyzer(); analyzer.load(p); data = analyzer.analyze()
     post = data["post_sweep_analysis"]
-    assert post["total_sweeps"] == 1
-    assert post["reclaim_wait_count"] == 1
-    assert post["invalidated_after_sweep_count"] == 1
+    assert post["sweep_ticks"] == 1
+    assert post["reclaim_wait_ticks"] == 1
+    assert post["invalidated_ticks"] == 1
 
 
 def test_reclaim_hold_hints_use_p75(tmp_path):

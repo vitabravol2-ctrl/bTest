@@ -6,6 +6,8 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any
 
+GRADES = ("A_PLUS", "A", "B", "C", "TRASH")
+
 
 class SessionAnalyzer:
     def __init__(self) -> None:
@@ -47,6 +49,28 @@ class SessionAnalyzer:
     @classmethod
     def _p90(cls, values: list[float]) -> float:
         return cls._percentile(values, 0.90)
+
+    @staticmethod
+    def _safe_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _event_price(self, event: dict[str, Any]) -> float:
+        for key in ("trigger_price", "last_price", "price", "ask", "bid"):
+            value = self._safe_float(event.get(key))
+            if value > 0:
+                return value
+        return 0.0
+
+    @staticmethod
+    def _event_ts_ms(event: dict[str, Any]) -> int:
+        raw = event.get("ts_ms", event.get("ts", 0))
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
 
     def suggest_profile(self) -> dict[str, Any]:
         if not self.report_data:
@@ -209,6 +233,56 @@ class SessionAnalyzer:
         losses = sum(1 for e in closed_trades if e.get("paper_trade_result") == "LOSS")
         timeouts = sum(1 for e in closed_trades if e.get("paper_trade_result") == "TIMEOUT")
         total_events = len(self.events)
+
+        def setup_key(event: dict[str, Any]) -> tuple[Any, ...]:
+            cluster_id = event.get("signal_cluster_id")
+            if cluster_id not in (None, "", 0):
+                return ("cluster", str(cluster_id))
+            ts_ms = self._event_ts_ms(event)
+            setup_age = int(self._safe_float(event.get("setup_age_ms", 0.0)))
+            return ("window", max(0, (ts_ms - setup_age) // 1000))
+
+        unique_sweeps = {setup_key(e) for e in sweep_events}
+        unique_reclaim_setups = {setup_key(e) for e in reclaim_wait_events}
+        unique_detected_setups = {setup_key(e) for e in detected_after_sweep}
+        unique_invalidated_setups = {setup_key(e) for e in invalidated_after_sweep}
+        unique_sweeps_count = len(unique_sweeps)
+
+        rows_with_prices = [(idx, e, self._event_ts_ms(e), self._event_price(e)) for idx, e in enumerate(self.events)]
+        signal_perf_rows = []
+        for idx, e, ts_ms, signal_price in rows_with_prices:
+            grade = str(e.get("signal_quality_grade", e.get("signal_grade", "")))
+            if not (bool(e.get("is_new_market_event", False)) and bool(e.get("detected", False)) and grade in GRADES and grade != "TRASH"):
+                continue
+            if signal_price <= 0 or ts_ms <= 0:
+                continue
+            future_returns = {}
+            window_prices = []
+            for _, _, fts_ms, fpx in rows_with_prices[idx+1:]:
+                if fpx <= 0:
+                    continue
+                dt = fts_ms - ts_ms
+                if dt < 0:
+                    continue
+                if dt <= 10000:
+                    window_prices.append(fpx)
+                for h in (1000,3000,5000,10000):
+                    if h not in future_returns and dt >= h:
+                        future_returns[h] = (fpx - signal_price) / signal_price * 100.0
+                if dt > 10000 and len(future_returns)==4:
+                    break
+            if not window_prices:
+                window_prices=[signal_price]
+            signal_perf_rows.append({"grade":grade,"post_1s_return_pct":future_returns.get(1000,0.0),"post_3s_return_pct":future_returns.get(3000,0.0),"post_5s_return_pct":future_returns.get(5000,0.0),"post_10s_return_pct":future_returns.get(10000,0.0),"max_favorable_10s_pct":(max(window_prices)-signal_price)/signal_price*100.0,"max_adverse_10s_pct":(min(window_prices)-signal_price)/signal_price*100.0})
+
+        post_perf = {}
+        for grade in GRADES:
+            rows=[r for r in signal_perf_rows if r["grade"]==grade]
+            count=len(rows)
+            def _avg(k): return mean([self._safe_float(r.get(k,0.0)) for r in rows]) if rows else 0.0
+            def _pos(k): return (sum(1 for r in rows if self._safe_float(r.get(k,0.0))>0)/count*100.0) if count else 0.0
+            post_perf[grade] = {"count":count,"avg_post_1s_return_pct":_avg("post_1s_return_pct"),"avg_post_3s_return_pct":_avg("post_3s_return_pct"),"avg_post_5s_return_pct":_avg("post_5s_return_pct"),"avg_post_10s_return_pct":_avg("post_10s_return_pct"),"avg_max_favorable_10s_pct":_avg("max_favorable_10s_pct"),"avg_max_adverse_10s_pct":_avg("max_adverse_10s_pct"),"positive_1s_rate_pct":_pos("post_1s_return_pct"),"positive_3s_rate_pct":_pos("post_3s_return_pct"),"positive_5s_rate_pct":_pos("post_5s_return_pct"),"positive_10s_rate_pct":_pos("post_10s_return_pct")}
+
         data = {
             "total_events": total_events,
             "detected_count": detected_count,
@@ -243,12 +317,16 @@ class SessionAnalyzer:
                 "pass_hold_ok": pass_hold,
             },
             "post_sweep_analysis": {
-                "total_sweeps": len(sweep_events),
-                "reclaim_wait_count": len(reclaim_wait_events),
-                "invalidated_after_sweep_count": len(invalidated_after_sweep),
-                "detected_after_sweep_count": len(detected_after_sweep),
-                "reclaim_success_rate": (len(reclaim_wait_events) / len(sweep_events) * 100.0) if sweep_events else 0.0,
-                "signal_success_rate": (len(detected_after_sweep) / len(sweep_events) * 100.0) if sweep_events else 0.0,
+                "sweep_ticks": len(sweep_events),
+                "unique_sweeps": unique_sweeps_count,
+                "reclaim_wait_ticks": len(reclaim_wait_events),
+                "unique_reclaim_setups": len(unique_reclaim_setups),
+                "invalidated_ticks": len(invalidated_after_sweep),
+                "detected_ticks": len(detected_after_sweep),
+                "unique_detected_setups": len(unique_detected_setups),
+                "unique_invalidated_setups": len(unique_invalidated_setups),
+                "reclaim_success_rate_pct": (min(100.0, len(unique_reclaim_setups) / unique_sweeps_count * 100.0)) if unique_sweeps_count else 0.0,
+                "signal_success_rate_pct": (min(100.0, len(unique_detected_setups) / unique_sweeps_count * 100.0)) if unique_sweeps_count else 0.0,
                 "avg_setup_age_ms": mean(setup_age_values) if setup_age_values else 0.0,
                 "median_setup_age_ms": float(median(setup_age_values)) if setup_age_values else 0.0,
                 "p75_setup_age_ms": self._p75(setup_age_values) if setup_age_values else 0.0,
@@ -282,7 +360,7 @@ class SessionAnalyzer:
             "would_signals_after_sweep": would_after_sweep,
             "top_unlock_blockers": top_unlock_blockers,
             "avg_would_signal_score": avg_would_score,
-            "reclaim_success_before_would_signal": data["post_sweep_analysis"]["reclaim_success_rate"],
+            "reclaim_success_before_would_signal": data["post_sweep_analysis"]["reclaim_success_rate_pct"],
             "recommendation": recommendation,
         }
         bounce_blocker_count = int(fail_counts.get("bounce_ok", 0))
@@ -349,14 +427,28 @@ class SessionAnalyzer:
             "total_pnl": sum(pnls) if pnls else 0.0,
             "max_favorable_avg": 0.0,
             "max_adverse_avg": 0.0,
-            "post_signal_performance": {},
+            "post_signal_performance": post_perf,
             "recommendation": "NEED_MORE_DATA",
         }
-        if raw_signals > 0 and grouped_signals and raw_signals / max(1, grouped_signals) > 3:
-            data["signal_quality_paper"]["recommendation"] = "SPAM_SIGNALS_GROUPING_NEEDED"
-        elif len(closed_trades) >= 5:
-            wr = data["signal_quality_paper"]["winrate"]
-            data["signal_quality_paper"]["recommendation"] = "SIGNALS_GOOD_ENOUGH_FOR_MORE_TESTING" if wr >= 50 else "TOO_MANY_FALSE_SIGNALS"
+        market_events = int(data["signal_quality_paper"].get("market_events", 0))
+        ratio = (raw_signals / market_events) if market_events > 0 else 0.0
+        a_plus = post_perf.get("A_PLUS", {})
+        a_grade = post_perf.get("A", {})
+        c_grade = post_perf.get("C", {})
+        trash_grade = post_perf.get("TRASH", {})
+        if market_events < 5:
+            rec = "NEED_MORE_DATA"
+        elif ratio > 10:
+            rec = "SPAM_SIGNALS_GROUPING_NEEDED"
+        elif grade_counts.get("TRASH", 0) >= max(3, int(sum(grade_counts.values()) * 0.8)):
+            rec = "TOO_MANY_TRASH"
+        elif market_events >= 20 and (a_plus.get("avg_post_5s_return_pct", 0.0) + a_grade.get("avg_post_5s_return_pct", 0.0)) > (c_grade.get("avg_post_5s_return_pct", 0.0) + trash_grade.get("avg_post_5s_return_pct", 0.0)):
+            rec = "READY_FOR_REAL_PAPER_ENGINE"
+        elif (a_plus.get("avg_post_3s_return_pct", 0.0) > 0 or a_plus.get("avg_post_5s_return_pct", 0.0) > 0 or a_grade.get("avg_post_3s_return_pct", 0.0) > 0 or a_grade.get("avg_post_5s_return_pct", 0.0) > 0):
+            rec = "QUALITY_OK"
+        else:
+            rec = "POST_SIGNAL_WEAK"
+        data["signal_quality_paper"]["recommendation"] = rec
 
         data["reclaim_hints"] = {
             "suggested_min_reclaim_hold_ms": int(max(100, min(800, p75_hold * 0.70))) if p75_hold > 0 else 150,
@@ -434,9 +526,9 @@ class SessionAnalyzer:
         total_events = len(self.events)
         sweeps_found = sum(1 for e in self.events if str(e.get("phase", "")) == "LIQUIDITY_SWEEP")
         post = self.report_data.get("post_sweep_analysis", {})
-        reclaim_wait = int(post.get("reclaim_wait_count", 0))
+        reclaim_wait = int(post.get("reclaim_wait_ticks", 0))
         hold_blockers = int((self.report_data.get("near_signal_blockers", {}) or {}).get("hold_ok", 0))
-        detected_after_sweep = int(post.get("detected_after_sweep_count", 0))
+        detected_after_sweep = int(post.get("detected_ticks", 0))
         data_is_small = (
             total_events < min_research_ticks
             or sweeps_found < min_sweeps_for_confidence
@@ -546,12 +638,12 @@ class SessionAnalyzer:
             [
                 "",
                 "POST-SWEEP RECLAIM/HOLD ANALYSIS",
-                f"  total sweeps: {post.get('total_sweeps', 0)}",
-                f"  reclaim wait count: {post.get('reclaim_wait_count', 0)}",
-                f"  invalidated after sweep: {post.get('invalidated_after_sweep_count', 0)}",
-                f"  detected after sweep: {post.get('detected_after_sweep_count', 0)}",
-                f"  reclaim success rate: {post.get('reclaim_success_rate', 0.0):.2f}%",
-                f"  signal success rate: {post.get('signal_success_rate', 0.0):.2f}%",
+                f"  total sweeps: {post.get('sweep_ticks', 0)}",
+                f"  reclaim wait count: {post.get('reclaim_wait_ticks', 0)}",
+                f"  invalidated after sweep: {post.get('invalidated_ticks', 0)}",
+                f"  detected after sweep: {post.get('detected_ticks', 0)}",
+                f"  reclaim success rate: {post.get('reclaim_success_rate_pct', 0.0):.2f}%",
+                f"  signal success rate: {post.get('signal_success_rate_pct', 0.0):.2f}%",
                 f"  median/p75 setup age ms: {post.get('median_setup_age_ms', 0.0):.2f}/{post.get('p75_setup_age_ms', 0.0):.2f}",
                 f"  median/p75 reclaim hold ms: {post.get('median_reclaim_hold_ms', 0.0):.2f}/{post.get('p75_reclaim_hold_ms', 0.0):.2f}",
                 f"  top invalidation reasons: {post.get('top_invalidation_reasons', {})}",
