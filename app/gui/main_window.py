@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         self.auto_research_active = False
         self.auto_research_started_ms = 0
         self._selected_profile_name = "CONSERVATIVE"
+        self.custom_runtime_params: dict[str, float] = {}
 
         self.ws = MarketWSClient(self.logger)
         self.ws.tick_received.connect(self.on_tick)
@@ -391,6 +392,12 @@ class MainWindow(QMainWindow):
         self.lbl_research_blocker = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         self.lbl_research_action = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         self.lbl_research_conf = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_ps_sweeps = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_ps_reclaims = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_ps_invalid = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_ps_reclaim_rate = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_ps_hold_p75 = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_ps_status = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         for title, label in (
             ("Status", self.lbl_research_status),
             ("Ticks", self.lbl_research_ticks),
@@ -400,6 +407,12 @@ class MainWindow(QMainWindow):
             ("Top blocker", self.lbl_research_blocker),
             ("Suggested action", self.lbl_research_action),
             ("Confidence", self.lbl_research_conf),
+            ("PS Sweeps", self.lbl_ps_sweeps),
+            ("PS Reclaim waits", self.lbl_ps_reclaims),
+            ("PS Invalidated", self.lbl_ps_invalid),
+            ("PS Reclaim rate", self.lbl_ps_reclaim_rate),
+            ("PS Hold p75", self.lbl_ps_hold_p75),
+            ("PS Status", self.lbl_ps_status),
         ):
             ag.addWidget(QLabel(title), row, 0); ag.addWidget(label, row, 1); row += 1
 
@@ -673,6 +686,13 @@ class MainWindow(QMainWindow):
                 self.logger.info("- suggested drop/bounce/speed: %.5f / %.5f / %.5f", data["suggested_profile"]["min_grab_drop_pct"], data["suggested_profile"]["min_reclaim_bounce_pct"], data["suggested_profile"]["min_impulse_speed_pct_per_sec"])
                 self.logger.info("- before/after near-signals: %s/%s", validation.get("current_near_signal_count", 0), validation.get("suggested_near_signal_count", 0))
                 self.logger.info("- auto_apply: False")
+                post = data.get("post_sweep_analysis", {})
+                self.lbl_ps_sweeps.setText(str(post.get("total_sweeps", 0)))
+                self.lbl_ps_reclaims.setText(str(post.get("reclaim_wait_count", 0)))
+                self.lbl_ps_invalid.setText(str(post.get("invalidated_after_sweep_count", 0)))
+                self.lbl_ps_reclaim_rate.setText(f"{post.get('reclaim_success_rate', 0.0):.1f}%")
+                self.lbl_ps_hold_p75.setText(f"{post.get('p75_reclaim_hold_ms', 0.0):.0f} ms")
+                self.lbl_ps_status.setText(validation.get("recommendation", "-"))
                 self.research_pipeline.set_waiting_for_entry()
                 self.auto_research_active = False
             except Exception as exc:
@@ -738,6 +758,7 @@ class MainWindow(QMainWindow):
             max_slow_trend_drop_pct=float(suggested["max_slow_trend_drop_pct"]),
             signal_min_score=float(suggested["signal_min_score"]),
             reasons=list(suggested.get("reason", [])),
+            runtime_params=dict(suggested.get("runtime_params", {})),
         )
         report_path = Path(path).with_name(f"{Path(path).stem}_report.txt")
         analyzer.export_report(report_path)
@@ -758,6 +779,13 @@ class MainWindow(QMainWindow):
             top_blocker,
             report_path,
         )
+        post = data.get("post_sweep_analysis", {})
+        self.lbl_ps_sweeps.setText(str(post.get("total_sweeps", 0)))
+        self.lbl_ps_reclaims.setText(str(post.get("reclaim_wait_count", 0)))
+        self.lbl_ps_invalid.setText(str(post.get("invalidated_after_sweep_count", 0)))
+        self.lbl_ps_reclaim_rate.setText(f"{post.get('reclaim_success_rate', 0.0):.1f}%")
+        self.lbl_ps_hold_p75.setText(f"{post.get('p75_reclaim_hold_ms', 0.0):.0f} ms")
+        self.lbl_ps_status.setText(data.get("calibration_validation", {}).get("recommendation", "-"))
 
     def apply_calibration(self) -> None:
         if self.last_calibration_suggestion is None:
@@ -788,6 +816,9 @@ class MainWindow(QMainWindow):
             ("signal_min_score", profile.signal_min_score, 2),
             ("max_trend_drop_mid_pct", profile.max_trend_drop_mid_pct, 5),
             ("max_slow_trend_drop_pct", profile.max_slow_trend_drop_pct, 5),
+            ("min_reclaim_hold_ms", float(self.custom_runtime_params.get("min_reclaim_hold_ms", 150.0)), 0),
+            ("reclaim_window_ms", float(self.custom_runtime_params.get("reclaim_window_ms", 3000.0)), 0),
+            ("invalidation_cooldown_ms", float(self.custom_runtime_params.get("invalidation_cooldown_ms", 1000.0)), 0),
         ):
             spin = QDoubleSpinBox(dialog)
             spin.setDecimals(decimals)
@@ -806,7 +837,12 @@ class MainWindow(QMainWindow):
         layout.addLayout(row)
 
         def _build_profile(name: str) -> ThresholdProfile:
-            return ThresholdProfile(name=name, **{k: float(v.value()) for k, v in fields.items()})
+            profile_keys = ThresholdProfile.__dataclass_fields__.keys()
+            payload = {k: float(v.value()) for k, v in fields.items() if k in profile_keys}
+            self.custom_runtime_params = {k: float(v.value()) for k, v in fields.items() if k not in profile_keys}
+            if self.custom_runtime_params:
+                self.logger.info("Custom runtime params saved: %s", self.custom_runtime_params)
+            return ThresholdProfile(name=name, **payload)
 
         def _apply(name: str) -> None:
             new_profile = _build_profile(name)

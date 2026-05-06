@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from app.profiles import ThresholdProfile
 
@@ -15,6 +16,7 @@ class CalibrationSuggestion:
     max_slow_trend_drop_pct: float
     signal_min_score: float
     reasons: list[str]
+    runtime_params: dict[str, Any] | None = None
 
     def to_profile(self) -> ThresholdProfile:
         return ThresholdProfile(

@@ -107,3 +107,31 @@ def test_validation_uses_custom_current_profile(monkeypatch):
         }
     )
     assert captured["name"] == "CUSTOM"
+
+
+def test_settings_accepts_reclaim_hold_fields_without_breaking():
+    profile_keys = ThresholdProfile.__dataclass_fields__.keys()
+    fields = {
+        "min_grab_drop_pct": 0.01,
+        "min_reclaim_bounce_pct": 0.01,
+        "min_impulse_speed_pct_per_sec": 0.001,
+        "signal_min_score": 55.0,
+        "max_trend_drop_mid_pct": 0.25,
+        "max_slow_trend_drop_pct": 0.40,
+        "min_reclaim_hold_ms": 150.0,
+        "reclaim_window_ms": 3000.0,
+        "invalidation_cooldown_ms": 1000.0,
+    }
+    payload = {k: v for k, v in fields.items() if k in profile_keys}
+    extras = {k: v for k, v in fields.items() if k not in profile_keys}
+    profile = ThresholdProfile(name="CUSTOM", **payload)
+    assert profile.name == "CUSTOM"
+    assert "min_reclaim_hold_ms" in extras
+
+
+def test_no_trading_or_execution_added():
+    import pathlib
+    text = pathlib.Path("app/session_analyzer.py").read_text(encoding="utf-8") + pathlib.Path("app/gui/main_window.py").read_text(encoding="utf-8")
+    assert "api_key" not in text.lower()
+    assert "paper" not in text.lower()
+    assert "create_order" not in text.lower()
