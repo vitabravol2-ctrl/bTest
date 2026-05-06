@@ -17,3 +17,8 @@ class LiquidityGrabSignal:
     reclaim_hold_ms: int = 0
     last_invalid_reason: str = "-"
     debug: dict[str, bool] = field(default_factory=dict)
+    would_signal: bool = False
+    would_signal_reason: str = ""
+    unlock_debug_active: bool = False
+    unlock_blocker: str = ""
+    unlock_reason: str = ""

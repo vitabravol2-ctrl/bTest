@@ -68,6 +68,11 @@ class SignalRecorder:
             "fsm_state": fsm_state,
             "reason_codes": list(getattr(signal, "reason_codes", [])),
             "detected": bool(getattr(signal, "detected", False)),
+            "would_signal": bool(getattr(signal, "would_signal", False)),
+            "would_signal_reason": str(getattr(signal, "would_signal_reason", "")),
+            "unlock_debug_active": bool(getattr(signal, "unlock_debug_active", False)),
+            "unlock_blocker": str(getattr(signal, "unlock_blocker", "")),
+            "unlock_reason": str(getattr(signal, "unlock_reason", "")),
             "debug": dict(getattr(signal, "debug", {})),
             "profile_name": str(getattr(profile, "name", "CONSERVATIVE")),
             "thresholds": {

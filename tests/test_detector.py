@@ -185,3 +185,36 @@ def test_reclaim_timeout_invalidates():
     clock.advance(RECLAIM_TIMEOUT_MS + 1)
     s = d.detect(mt(drop=0.2, bounce=0.05, low=99.0), mt(drop=0.1), mt(drop=0.1), buf(ask=99.0))
     assert "RECLAIM_TIMEOUT" in s.reason_codes
+
+def test_would_signal_triggers_when_only_bounce_blocks():
+    clock = FakeClock()
+    d = LiquidityGrabDetector(now_ms_provider=clock)
+    d.set_runtime_flags(signal_unlock_debug=True, p90_bounce_pct=0.02)
+    s = d.detect(mt(drop=0.2, bounce=0.01, low=99.0), mt(drop=0.1), mt(drop=0.1), buf(ask=100.2))
+    assert s.would_signal is True
+    assert s.would_signal_reason == "WOULD_SIGNAL_BOUNCE"
+    assert s.detected is False
+
+
+def test_would_signal_triggers_when_only_hold_blocks():
+    clock = FakeClock()
+    d = LiquidityGrabDetector(now_ms_provider=clock)
+    d.set_runtime_flags(signal_unlock_debug=True, p90_bounce_pct=0.05)
+    b = buf(ask=100.2)
+    s = d.detect(mt(drop=0.2, bounce=0.05, low=99.0), mt(drop=0.1), mt(drop=0.1), b)
+    assert s.would_signal is True
+    assert s.would_signal_reason == "WOULD_SIGNAL_HOLD"
+
+
+def test_unlock_mode_does_not_modify_detected():
+    d = LiquidityGrabDetector(now_ms_provider=FakeClock())
+    d.set_runtime_flags(signal_unlock_debug=True, p90_bounce_pct=0.02)
+    s = d.detect(mt(drop=0.2, bounce=0.01, low=99.0), mt(drop=0.1), mt(drop=0.1), buf(ask=100.2))
+    assert s.detected is False
+
+
+def test_unlock_mode_respects_spread_guard():
+    d = LiquidityGrabDetector(now_ms_provider=FakeClock())
+    d.set_runtime_flags(signal_unlock_debug=True, p90_bounce_pct=0.02)
+    s = d.detect(mt(drop=0.2, bounce=0.01, low=99.0, spread=1.0), mt(drop=0.1), mt(drop=0.1), buf(ask=100.2))
+    assert s.would_signal is False

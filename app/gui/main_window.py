@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -517,6 +518,7 @@ class MainWindow(QMainWindow):
 
         m = self.analyzer.analyze(self.buffer)
         fast_metrics = m["fast"]
+        self.detector.set_runtime_flags(signal_unlock_debug=bool(self.custom_runtime_params.get("signal_unlock_debug", 0.0) >= 0.5), p90_bounce_pct=float(self.custom_runtime_params.get("unlock_p90_bounce_pct", 0.0)))
         signal = self.detector.detect(m["fast"], m["mid"], m["slow"], self.buffer)
         result = self.fsm.evaluate(signal)
         self.recorder.record_tick(tick, fast_metrics, signal, result.state, self.detector.profile)
@@ -563,7 +565,10 @@ class MainWindow(QMainWindow):
             )
 
         self.lbl_state.setText(result.state)
-        self.lbl_signal.setText("LONG READY" if result.signal == "LONG_SIGNAL" else "OFF")
+        if signal.would_signal:
+            self.lbl_signal.setText(f"WOULD ({signal.would_signal_reason})")
+        else:
+            self.lbl_signal.setText("LONG READY" if result.signal == "LONG_SIGNAL" else "OFF")
 
         self.bar_drop.setValue(min(100, int(abs(fast_metrics.drop_pct) * 3000)))
         self.bar_bounce.setValue(min(100, int(abs(fast_metrics.bounce_pct) * 3000)))
@@ -808,6 +813,10 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("Algorithm Profile Settings")
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
+        chk_unlock = QCheckBox("Enable SIGNAL_UNLOCK_DEBUG", dialog)
+        chk_unlock.setChecked(bool(self.custom_runtime_params.get("signal_unlock_debug", 0.0) >= 0.5))
+        form.addRow(chk_unlock)
+        form.addRow(QLabel("Debug-only virtual signal mode. No trading."))
         fields: dict[str, QDoubleSpinBox] = {}
         for key, value, decimals in (
             ("min_grab_drop_pct", profile.min_grab_drop_pct, 5),
@@ -819,6 +828,7 @@ class MainWindow(QMainWindow):
             ("min_reclaim_hold_ms", float(self.custom_runtime_params.get("min_reclaim_hold_ms", 150.0)), 0),
             ("reclaim_window_ms", float(self.custom_runtime_params.get("reclaim_window_ms", 3000.0)), 0),
             ("invalidation_cooldown_ms", float(self.custom_runtime_params.get("invalidation_cooldown_ms", 1000.0)), 0),
+            ("unlock_p90_bounce_pct", float(self.custom_runtime_params.get("unlock_p90_bounce_pct", 0.0)), 5),
         ):
             spin = QDoubleSpinBox(dialog)
             spin.setDecimals(decimals)
@@ -840,6 +850,7 @@ class MainWindow(QMainWindow):
             profile_keys = ThresholdProfile.__dataclass_fields__.keys()
             payload = {k: float(v.value()) for k, v in fields.items() if k in profile_keys}
             self.custom_runtime_params = {k: float(v.value()) for k, v in fields.items() if k not in profile_keys}
+            self.custom_runtime_params["signal_unlock_debug"] = 1.0 if chk_unlock.isChecked() else 0.0
             if self.custom_runtime_params:
                 self.logger.info("Custom runtime params saved: %s", self.custom_runtime_params)
             return ThresholdProfile(name=name, **payload)
