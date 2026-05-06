@@ -65,3 +65,10 @@ class BinanceClient:
         if self.settings.manual_confirm_required and not manual_confirm:
             return {"ok": False, "reason": "MANUAL_CONFIRM_REQUIRED"}
         return self.signed_request("POST", "/api/v3/order", {"symbol": symbol, "side": "BUY", "type": "MARKET", "quoteOrderQty": quoteOrderQty})
+
+    def live_order_sell_market(self, symbol: str, quantity: float, manual_confirm: bool = False) -> dict:
+        if not self.settings.live_enabled:
+            return {"ok": False, "reason": "LIVE_DISABLED"}
+        if self.settings.manual_confirm_required and not manual_confirm:
+            return {"ok": False, "reason": "MANUAL_CONFIRM_REQUIRED"}
+        return self.signed_request("POST", "/api/v3/order", {"symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": quantity})

@@ -130,3 +130,12 @@ v0.4.4 — Replay Timeline GUI / calibration presets.
 - Local API key storage in `data/settings/binance_settings.json` (ignored by git).
 - Testnet/mainnet switch in GUI.
 - Order validation + test order workflow before any manual live action.
+
+## v0.5.1 — Mainnet Manual Buy + Protected Exit
+
+- This is **NOT** auto trading.
+- BUY is manual-only with typed confirmation.
+- Only one OPEN position is allowed at a time.
+- AUTO_EXIT is disabled by default.
+- No leverage/futures/grid/martingale/re-entry.
+- Tiny protected live gate only (manual entry + protected exit watcher).
