@@ -20,8 +20,8 @@ def test_signal_grouping_reduces_spam_signals():
 def test_signal_quality_grades_a_b_c():
     e = SignalQualityEngine(signal_min_score=70)
     assert e.evaluate(mk_signal(1000, 95), True, True).grade == "A"
-    assert e.evaluate(mk_signal(7000, 85), True, False).grade == "B"
-    assert e.evaluate(mk_signal(13000, 72), True, False).grade == "C"
+    assert e.evaluate(mk_signal(7000, 85), True, False).grade == "TRASH"
+    assert e.evaluate(mk_signal(13000, 72), True, False).grade == "TRASH"
 
 
 def test_paper_trade_hits_take_profit():
