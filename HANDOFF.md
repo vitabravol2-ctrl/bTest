@@ -1,45 +1,34 @@
 # bTest HANDOFF
 
 ## Version
-v0.3.2
+v0.3.3
 
-## Current status
-Detector/FSM testability and timing behavior are stabilized with deterministic unit tests.
+## What changed
+- Rebuilt GUI to cockpit/trading-dashboard style with:
+  - Top app header and status badges (WS, data quality, detector phase).
+  - Three fixed-width columns: MARKET, DETECTOR RADAR, ANALYZER.
+  - Compact bottom log panel with controlled height.
+- Added helper GUI methods:
+  - `_make_card(title)`
+  - `_make_value_label(size=...)`
+  - `_set_badge(label, text, status)`
+- Added launcher/update scripts for Windows:
+  - `start.bat`
+  - `update.bat`
+  - `start.ps1`
+  - `update.ps1`
+- README updated with quick start and manual commands.
 
-## What was fixed
-- Added injectable detector time provider (`now_ms_provider`).
-- Added explicit bounce hard-filter (`BOUNCE_TOO_SMALL`) before reclaim timer starts.
-- Added invalidation cooldown guard with `INVALIDATION_COOLDOWN_MS` and reason code `INVALIDATION_COOLDOWN`.
-- Updated FSM transitions so state can move out of `INVALIDATED` and enter `COOLDOWN` when signal disappears.
-
-## Detector lifecycle
-WATCHING_DROP -> LIQUIDITY_SWEEP -> RECLAIM_WAIT -> RECLAIM_CONFIRMED -> LONG_SIGNAL
-
-Invalidation paths move detector to `INVALIDATED`, then cooldown gate applies before setup can restart.
-
-## Config thresholds
-See `app/config.py` for:
-- `MIN_GRAB_DROP_PCT`
-- `MIN_RECLAIM_BOUNCE_PCT`
-- `RECLAIM_HOLD_MS`
-- `RECLAIM_TIMEOUT_MS`
-- `SETUP_MAX_AGE_MS`
-- `INVALIDATION_COOLDOWN_MS`
-
-## Tests
-Detector tests cover waiting data, small drop, small bounce, reclaim hold, slow trend filter, new-low invalidation, high spread reset, invalidation cooldown, setup age invalidation, and reclaim timeout invalidation.
-
-## Files changed
-- `app/detector.py`
-- `app/config.py`
-- `app/strategy/liquidity_grab_fsm.py`
-- `tests/test_detector.py`
-- `README.md`
-- `HANDOFF.md`
+## GUI layout
+- Left: market snapshot (symbol, last/bid/ask, spread, tick age/rate).
+- Center: detector radar (phase, score, side, signal, reason, reason codes, timers, invalid reason).
+- Right: analyzer values + FSM state.
+- Status color mapping implemented for connection/data quality/phase/signal cues.
 
 ## Known limitations
 - No execution engine/trading integration.
 - No recorder/replay dataset tooling yet.
+- GUI is optimized for 16:9 desktop layouts and may require resizing on smaller displays.
 
 ## Next recommended step
 v0.4.0 — Signal Recorder + Replay Dataset
