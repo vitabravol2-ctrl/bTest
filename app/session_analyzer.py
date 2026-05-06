@@ -36,6 +36,36 @@ class SessionAnalyzer:
         idx = int(0.95 * (len(sorted_vals) - 1))
         return float(sorted_vals[idx])
 
+    def suggest_profile(self) -> dict[str, Any]:
+        if not self.report_data:
+            self.analyze()
+        hints = self.report_data.get("threshold_hints", {})
+        near_signals_count = int(self.report_data.get("near_signals_count", 0))
+
+        p95_drop_pct = float(hints.get("p95_drop_pct", 0.0))
+        p95_bounce_pct = float(hints.get("p95_bounce_pct", 0.0))
+        p95_speed = float(hints.get("p95_speed", 0.0))
+        suggested = {
+            "name": "CALIBRATED",
+            "min_grab_drop_pct": max(0.005, p95_drop_pct * 0.80),
+            "min_reclaim_bounce_pct": max(0.003, p95_bounce_pct * 0.80),
+            "min_impulse_speed_pct_per_sec": max(0.0005, abs(p95_speed) * 0.70),
+            "signal_min_score": 55 if near_signals_count > 0 else 60,
+            "max_trend_drop_mid_pct": 0.25,
+            "max_slow_trend_drop_pct": 0.40,
+            "reason": [
+                f"p95_drop_pct={p95_drop_pct:.5f}",
+                f"p95_bounce_pct={p95_bounce_pct:.5f}",
+                f"p95_speed={p95_speed:.5f} (abs used)",
+                f"near_signals_count={near_signals_count}",
+                f"near_signal_blockers={self.report_data.get('near_signal_blockers', {})}",
+                f"pass_drop_ok={hints.get('pass_drop_ok', 0)} pass_drop_bounce={hints.get('pass_drop_bounce', 0)}",
+                f"pass_drop_bounce_reclaim={hints.get('pass_drop_bounce_reclaim', 0)} pass_hold_ok={hints.get('pass_hold_ok', 0)}",
+                f"max_drop_pct={hints.get('max_drop_pct', 0.0):.5f} max_bounce_pct={hints.get('max_bounce_pct', 0.0):.5f}",
+            ],
+        }
+        return suggested
+
     def analyze(self) -> dict[str, Any]:
         scores = [float(e.get("score", 0.0)) for e in self.events]
         detected_count = sum(1 for e in self.events if bool(e.get("detected", False)))
@@ -124,7 +154,9 @@ class SessionAnalyzer:
                 "pass_hold_ok": pass_hold,
             },
         }
+        data["suggested_profile"] = self.suggest_profile() if self.report_data else None
         self.report_data = data
+        data["suggested_profile"] = self.suggest_profile()
         self.report_text = self._format_report(data)
         return data
 
@@ -135,59 +167,20 @@ class SessionAnalyzer:
             pairs = sorted(counter_dict.items(), key=lambda x: x[1], reverse=True)
             return "\n".join(f"  - {k}: {v}" for k, v in pairs)
 
-        lines = [
-            "bTest Session Analyzer Report",
-            "=" * 32,
-            "",
-            "General:",
-            f"  total_events: {data['total_events']}",
-            f"  detected_count: {data['detected_count']}",
-            f"  max_score: {data['max_score']:.2f}",
-            f"  avg_score: {data['avg_score']:.2f}",
-            "  profile_counts:",
-            fmt_counter(data["profile_counts"]),
-            "",
-            "Phases:",
-            fmt_counter(data["phase_counts"]),
-            "",
-            "Reason codes:",
-            fmt_counter(data["reason_code_counts"]),
-            "",
-            "Fail counts (debug flags == false):",
-            fmt_counter(data["fail_counts"]),
-            "",
-            "Near signals (score >= 50 and detected=false):",
-            f"  count: {data['near_signals_count']}",
-            "  blockers:",
-            fmt_counter(data["near_signal_blockers"]),
-            "  top20:",
-        ]
+        lines = ["bTest Session Analyzer Report", "=" * 32, "", "General:", f"  total_events: {data['total_events']}", f"  detected_count: {data['detected_count']}", f"  max_score: {data['max_score']:.2f}", f"  avg_score: {data['avg_score']:.2f}", "  profile_counts:", fmt_counter(data["profile_counts"]), "", "Phases:", fmt_counter(data["phase_counts"]), "", "Reason codes:", fmt_counter(data["reason_code_counts"]), "", "Fail counts (debug flags == false):", fmt_counter(data["fail_counts"]), "", "Near signals (score >= 50 and detected=false):", f"  count: {data['near_signals_count']}", "  blockers:", fmt_counter(data["near_signal_blockers"]), "  top20:"]
         if data["near_signal_top20"]:
             for item in data["near_signal_top20"]:
-                lines.append(
-                    f"    ts={item['ts']} score={item['score']:.2f} phase={item['phase']} blocker={item['blocker']} "
-                    f"profile={item['profile']} drop={item['drop_pct']:.5f} bounce={item['bounce_pct']:.5f} speed={item['speed']:.5f}"
-                )
+                lines.append(f"    ts={item['ts']} score={item['score']:.2f} phase={item['phase']} blocker={item['blocker']} profile={item['profile']} drop={item['drop_pct']:.5f} bounce={item['bounce_pct']:.5f} speed={item['speed']:.5f}")
         else:
             lines.append("    - none")
 
         hints = data["threshold_hints"]
-        lines.extend(
-            [
-                "",
-                "Threshold hints:",
-                f"  max_drop_pct: {hints['max_drop_pct']:.5f}",
-                f"  p95_drop_pct: {hints['p95_drop_pct']:.5f}",
-                f"  max_bounce_pct: {hints['max_bounce_pct']:.5f}",
-                f"  p95_bounce_pct: {hints['p95_bounce_pct']:.5f}",
-                f"  max_speed: {hints['max_speed']:.5f}",
-                f"  p95_speed: {hints['p95_speed']:.5f}",
-                f"  pass_drop_ok: {hints['pass_drop_ok']}",
-                f"  pass_drop_bounce: {hints['pass_drop_bounce']}",
-                f"  pass_drop_bounce_reclaim: {hints['pass_drop_bounce_reclaim']}",
-                f"  pass_hold_ok: {hints['pass_hold_ok']}",
-            ]
-        )
+        lines.extend(["", "Threshold hints:", f"  max_drop_pct: {hints['max_drop_pct']:.5f}", f"  p95_drop_pct: {hints['p95_drop_pct']:.5f}", f"  max_bounce_pct: {hints['max_bounce_pct']:.5f}", f"  p95_bounce_pct: {hints['p95_bounce_pct']:.5f}", f"  max_speed: {hints['max_speed']:.5f}", f"  p95_speed: {hints['p95_speed']:.5f}", f"  pass_drop_ok: {hints['pass_drop_ok']}", f"  pass_drop_bounce: {hints['pass_drop_bounce']}", f"  pass_drop_bounce_reclaim: {hints['pass_drop_bounce_reclaim']}", f"  pass_hold_ok: {hints['pass_hold_ok']}"])
+
+        suggested = data.get("suggested_profile") or self.suggest_profile()
+        lines.extend(["", "=== SUGGESTED CALIBRATED PROFILE ===", f"Suggested drop={suggested['min_grab_drop_pct']:.3f}", f"Suggested bounce={suggested['min_reclaim_bounce_pct']:.3f}", f"Suggested speed={suggested['min_impulse_speed_pct_per_sec']:.3f}", f"Suggested score={suggested['signal_min_score']:.0f}", "Reasons:"])
+        for reason in suggested.get("reason", []):
+            lines.append(f"  - {reason}")
         return "\n".join(lines) + "\n"
 
     def export_report(self, path: str | Path) -> Path:
