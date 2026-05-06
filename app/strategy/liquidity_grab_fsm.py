@@ -1,14 +1,16 @@
 from dataclasses import dataclass
 from enum import Enum
 
-from app.config import MAX_ALLOWED_SPREAD_PCT
-from app.metrics import MarketMetrics
+from app.signals import LiquidityGrabSignal
 
 
 class FSMState(str, Enum):
-    INIT = "INIT"
     IDLE = "IDLE"
-    WATCHING = "WATCHING"
+    WATCHING_DROP = "WATCHING_DROP"
+    SWEEP_DETECTED = "SWEEP_DETECTED"
+    RECLAIM_WAIT = "RECLAIM_WAIT"
+    SIGNAL_READY = "SIGNAL_READY"
+    COOLDOWN = "COOLDOWN"
 
 
 @dataclass(slots=True)
@@ -19,20 +21,23 @@ class FSMResult:
 
 
 class LiquidityGrabFSM:
-    def __init__(self, max_allowed_spread_pct: float = MAX_ALLOWED_SPREAD_PCT) -> None:
-        self.state = FSMState.INIT
-        self.max_allowed_spread_pct = max_allowed_spread_pct
+    def __init__(self) -> None:
+        self.state = FSMState.IDLE
 
-    def evaluate(self, metrics: MarketMetrics) -> FSMResult:
-        if self.state == FSMState.INIT:
+    def evaluate(self, signal: LiquidityGrabSignal) -> FSMResult:
+        if signal.detected:
+            self.state = FSMState.SIGNAL_READY
+            return FSMResult(self.state.value, "LONG_SIGNAL", signal.human_reason)
+
+        if signal.phase == "WATCHING_DROP":
+            self.state = FSMState.WATCHING_DROP
+        elif signal.phase == "LIQUIDITY_SWEEP":
+            self.state = FSMState.SWEEP_DETECTED
+        elif signal.phase == "RECLAIM_CONFIRMED":
+            self.state = FSMState.RECLAIM_WAIT
+        elif signal.phase == "NO_SETUP":
             self.state = FSMState.IDLE
+        elif self.state == FSMState.SIGNAL_READY:
+            self.state = FSMState.COOLDOWN
 
-        if not metrics.enough_data:
-            return FSMResult(self.state.value, "DATA_WAITING", "Not enough ticks in fast window")
-        if metrics.stale:
-            return FSMResult(self.state.value, "DATA_STALE", "Last tick is stale")
-        if metrics.spread_avg_pct > self.max_allowed_spread_pct:
-            return FSMResult(self.state.value, "HIGH_SPREAD", "Spread above allowed threshold")
-
-        self.state = FSMState.WATCHING
-        return FSMResult(self.state.value, "WATCHING_MARKET", "Data quality good, monitoring only")
+        return FSMResult(self.state.value, "NO_SIGNAL", signal.human_reason)

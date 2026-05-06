@@ -19,6 +19,7 @@ from app.analyzer import AnalyzerConfig, DataAnalyzer
 from app.config import (
     ANALYSIS_LOG_INTERVAL_MS,
     APP_NAME,
+    DETECTOR_LOG_INTERVAL_MS,
     FAST_WINDOW_MS,
     MAX_ALLOWED_SPREAD_PCT,
     MAX_BUFFER,
@@ -29,6 +30,7 @@ from app.config import (
     STALE_MS,
     SYMBOL,
 )
+from app.detector import LiquidityGrabDetector
 from app.logger import setup_logging
 from app.market_buffer import MarketBuffer
 from app.market_ws import MarketWSClient
@@ -39,24 +41,20 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(980, 720)
+        self.resize(980, 760)
 
         self.buffer = MarketBuffer(maxlen=MAX_BUFFER)
-        self.fsm = LiquidityGrabFSM(max_allowed_spread_pct=MAX_ALLOWED_SPREAD_PCT)
+        self.fsm = LiquidityGrabFSM()
+        self.detector = LiquidityGrabDetector()
         self.analyzer = DataAnalyzer(
-            AnalyzerConfig(
-                fast_window_ms=FAST_WINDOW_MS,
-                mid_window_ms=MID_WINDOW_MS,
-                slow_window_ms=SLOW_WINDOW_MS,
-                min_ticks_fast=MIN_TICKS_FAST,
-                stale_after_ms=STALE_AFTER_MS,
-            )
+            AnalyzerConfig(FAST_WINDOW_MS, MID_WINDOW_MS, SLOW_WINDOW_MS, MIN_TICKS_FAST, STALE_AFTER_MS)
         )
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.logger = setup_logging(self.append_log)
         self._last_analysis_log_ms = 0
+        self._last_detector_log_ms = 0
 
         self.ws = MarketWSClient(self.logger)
         self.ws.tick_received.connect(self.on_tick)
@@ -64,7 +62,6 @@ class MainWindow(QMainWindow):
         self.ws.error.connect(self.on_error)
 
         self._build_ui()
-
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_age)
         self.timer.start(500)
@@ -88,66 +85,53 @@ class MainWindow(QMainWindow):
 
         market_box = QGroupBox("Market Status")
         mg = QGridLayout(market_box)
-        self.lbl_symbol = QLabel(SYMBOL)
-        self.lbl_last = QLabel("-")
-        self.lbl_bid = QLabel("-")
-        self.lbl_ask = QLabel("-")
-        self.lbl_spread = QLabel("-")
-        self.lbl_ws = QLabel("DISCONNECTED")
-        self.lbl_age = QLabel("-")
-        rows = [
-            ("Symbol", self.lbl_symbol),
-            ("Last Price", self.lbl_last),
-            ("Bid", self.lbl_bid),
-            ("Ask", self.lbl_ask),
-            ("Spread %", self.lbl_spread),
-            ("WS status", self.lbl_ws),
-            ("Last tick age", self.lbl_age),
-        ]
-        for i, (k, v) in enumerate(rows):
+        self.lbl_symbol, self.lbl_last, self.lbl_bid, self.lbl_ask = QLabel(SYMBOL), QLabel("-"), QLabel("-"), QLabel("-")
+        self.lbl_spread, self.lbl_ws, self.lbl_age = QLabel("-"), QLabel("DISCONNECTED"), QLabel("-")
+        for i, (k, v) in enumerate([
+            ("Symbol", self.lbl_symbol), ("Last Price", self.lbl_last), ("Bid", self.lbl_bid), ("Ask", self.lbl_ask),
+            ("Spread %", self.lbl_spread), ("WS status", self.lbl_ws), ("Last tick age", self.lbl_age),
+        ]):
             mg.addWidget(QLabel(k), i, 0)
             mg.addWidget(v, i, 1)
 
         analyzer_box = QGroupBox("Data Analyzer")
         ag = QGridLayout(analyzer_box)
-        self.lbl_fast_drop = QLabel("-")
-        self.lbl_fast_bounce = QLabel("-")
-        self.lbl_speed = QLabel("-")
-        self.lbl_volatility = QLabel("-")
-        self.lbl_spread_avg = QLabel("-")
-        self.lbl_tick_rate = QLabel("-")
+        self.lbl_fast_drop, self.lbl_fast_bounce, self.lbl_speed = QLabel("-"), QLabel("-"), QLabel("-")
+        self.lbl_volatility, self.lbl_spread_avg, self.lbl_tick_rate = QLabel("-"), QLabel("-"), QLabel("-")
         self.lbl_data_quality = QLabel("WAITING")
-        arows = [
-            ("Fast drop %", self.lbl_fast_drop),
-            ("Fast bounce %", self.lbl_fast_bounce),
-            ("Speed %/sec", self.lbl_speed),
-            ("Volatility %", self.lbl_volatility),
-            ("Spread avg %", self.lbl_spread_avg),
-            ("Tick rate", self.lbl_tick_rate),
+        for i, (k, v) in enumerate([
+            ("Fast drop %", self.lbl_fast_drop), ("Fast bounce %", self.lbl_fast_bounce), ("Speed %/sec", self.lbl_speed),
+            ("Volatility %", self.lbl_volatility), ("Spread avg %", self.lbl_spread_avg), ("Tick rate", self.lbl_tick_rate),
             ("Data quality", self.lbl_data_quality),
-        ]
-        for i, (k, v) in enumerate(arows):
+        ]):
             ag.addWidget(QLabel(k), i, 0)
             ag.addWidget(v, i, 1)
 
+        det_box = QGroupBox("Liquidity Grab Detector")
+        dg = QGridLayout(det_box)
+        self.lbl_det_phase, self.lbl_det_score, self.lbl_det_side = QLabel("NO_SETUP"), QLabel("0.0"), QLabel("NONE")
+        self.lbl_trigger, self.lbl_grab_low, self.lbl_reclaim = QLabel("-"), QLabel("-"), QLabel("-")
+        self.lbl_reason_codes, self.lbl_human_reason = QLabel("-"), QLabel("-")
+        self.lbl_reason_codes.setWordWrap(True)
+        self.lbl_human_reason.setWordWrap(True)
+        for i, (k, v) in enumerate([
+            ("Phase", self.lbl_det_phase), ("Score", self.lbl_det_score), ("Side", self.lbl_det_side),
+            ("Trigger price", self.lbl_trigger), ("Grab low", self.lbl_grab_low), ("Reclaim level", self.lbl_reclaim),
+            ("Reason codes", self.lbl_reason_codes), ("Human reason", self.lbl_human_reason),
+        ]):
+            dg.addWidget(QLabel(k), i, 0)
+            dg.addWidget(v, i, 1)
+
         strat_box = QGroupBox("Strategy Status")
         sg = QGridLayout(strat_box)
-        self.lbl_state = QLabel("INIT")
-        self.lbl_signal = QLabel("NO_SIGNAL")
-        self.lbl_reason = QLabel("core kernel only")
-        srows = [
-            ("FSM State", self.lbl_state),
-            ("Signal", self.lbl_signal),
-            ("Reason", self.lbl_reason),
-        ]
-        for i, (k, v) in enumerate(srows):
+        self.lbl_state, self.lbl_signal, self.lbl_reason = QLabel("IDLE"), QLabel("NO_SIGNAL"), QLabel("detector idle")
+        for i, (k, v) in enumerate([("FSM State", self.lbl_state), ("Signal", self.lbl_signal), ("Reason", self.lbl_reason)]):
             sg.addWidget(QLabel(k), i, 0)
             sg.addWidget(v, i, 1)
 
         layout.addLayout(btn_row)
-        layout.addWidget(market_box)
-        layout.addWidget(analyzer_box)
-        layout.addWidget(strat_box)
+        for box in (market_box, analyzer_box, det_box, strat_box):
+            layout.addWidget(box)
         layout.addWidget(self.log_view)
 
     def append_log(self, message: str) -> None:
@@ -175,9 +159,10 @@ class MainWindow(QMainWindow):
         self.lbl_ask.setText(f"{tick.ask:.2f}")
         self.lbl_spread.setText(f"{tick.spread_pct:.5f}")
 
-        metrics_map = self.analyzer.analyze(self.buffer)
-        fast_metrics = metrics_map["fast"]
-        result = self.fsm.evaluate(fast_metrics)
+        m = self.analyzer.analyze(self.buffer)
+        fast_metrics = m["fast"]
+        signal = self.detector.detect(m["fast"], m["mid"], m["slow"], self.buffer)
+        result = self.fsm.evaluate(signal)
 
         self.lbl_fast_drop.setText(f"{fast_metrics.drop_pct:.5f}")
         self.lbl_fast_bounce.setText(f"{fast_metrics.bounce_pct:.5f}")
@@ -185,8 +170,16 @@ class MainWindow(QMainWindow):
         self.lbl_volatility.setText(f"{fast_metrics.volatility_pct:.5f}")
         self.lbl_spread_avg.setText(f"{fast_metrics.spread_avg_pct:.5f}")
         self.lbl_tick_rate.setText(f"{fast_metrics.tick_rate:.2f} t/s")
-        quality = self._quality_label(fast_metrics)
-        self.lbl_data_quality.setText(quality)
+        self.lbl_data_quality.setText(self._quality_label(fast_metrics))
+
+        self.lbl_det_phase.setText(signal.phase)
+        self.lbl_det_score.setText(f"{signal.score:.2f}")
+        self.lbl_det_side.setText(signal.side)
+        self.lbl_trigger.setText("-" if signal.trigger_price is None else f"{signal.trigger_price:.2f}")
+        self.lbl_grab_low.setText("-" if signal.grab_low is None else f"{signal.grab_low:.2f}")
+        self.lbl_reclaim.setText("-" if signal.reclaim_level is None else f"{signal.reclaim_level:.2f}")
+        self.lbl_reason_codes.setText(", ".join(signal.reason_codes) if signal.reason_codes else "-")
+        self.lbl_human_reason.setText(signal.human_reason)
 
         self.lbl_state.setText(result.state)
         self.lbl_signal.setText(result.signal)
@@ -194,15 +187,13 @@ class MainWindow(QMainWindow):
 
         if tick.ts_ms - self._last_analysis_log_ms >= ANALYSIS_LOG_INTERVAL_MS:
             self._last_analysis_log_ms = tick.ts_ms
-            self.logger.info(
-                "Analyzer drop=%.5f bounce=%.5f speed=%.5f spread=%.5f tick_rate=%.2f quality=%s",
-                fast_metrics.drop_pct,
-                fast_metrics.bounce_pct,
-                fast_metrics.impulse_speed_pct_per_sec,
-                fast_metrics.spread_avg_pct,
-                fast_metrics.tick_rate,
-                quality,
-            )
+            self.logger.info("Analyzer drop=%.5f bounce=%.5f speed=%.5f spread=%.5f", fast_metrics.drop_pct, fast_metrics.bounce_pct, fast_metrics.impulse_speed_pct_per_sec, fast_metrics.spread_avg_pct)
+
+        if tick.ts_ms - self._last_detector_log_ms >= DETECTOR_LOG_INTERVAL_MS:
+            self._last_detector_log_ms = tick.ts_ms
+            self.logger.info("Detector phase=%s score=%.2f side=%s reasons=%s detected=%s", signal.phase, signal.score, signal.side, signal.reason_codes, signal.detected)
+            if "LONG_SIGNAL_READY" in signal.reason_codes:
+                self.logger.warning("LIQUIDITY GRAB LONG SIGNAL READY")
 
     def refresh_age(self) -> None:
         now = int(time.time() * 1000)
