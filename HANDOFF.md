@@ -1,54 +1,34 @@
-# bTest HANDOFF
+# HANDOFF
 
 ## Version
-v0.3.0
+v0.3.1
 
-## What was implemented
-- Добавлен `LiquidityGrabSignal` dataclass (`app/signals.py`) как единый формат detector-сигнала.
-- Добавлен `LiquidityGrabDetector` (`app/detector.py`) с реальной логикой LONG stop hunt.
-- Реализованы фазы detector-а: `NO_SETUP` → `WATCHING_DROP` → `LIQUIDITY_SWEEP` → `RECLAIM_CONFIRMED` → `LONG_SIGNAL`.
-- Реализованы hard-фильтры: data sufficiency, stale check, spread check, min drop/bounce, impulse speed, mid trend risk, reclaim hold.
-- Добавлен score 0–100 с весами (drop/bounce/speed/spread/anti-trend).
-- Обновлён FSM (`app/strategy/liquidity_grab_fsm.py`) — теперь принимает `LiquidityGrabSignal` и показывает состояния detector-а без сделок.
-- Обновлён GUI (`app/gui/main_window.py`) новым блоком **Liquidity Grab Detector** и расширенным Strategy Status.
-- Добавлены detector thresholds в `app/config.py`.
-- Добавлено detector summary логирование раз в 2 секунды и отдельный warning при `LONG_SIGNAL_READY`.
+## What was fixed
+- Stabilized detector sweep/reclaim lifecycle to avoid false positives from sweep-low overwrite.
+- Reclaim target now uses `sweep_low * (1 + MIN_RECLAIM_BOUNCE_PCT / 100)`.
+- Drop speed validation now confirms downward move only (`drop_pct / fast_window_sec`, no `abs`).
+- Added reset/invalidation flow and explicit reason codes for setup aging, reclaim timeout, slow-trend danger, and reclaim invalidation.
+- Expanded FSM mapping to include invalidated/reclaim phases and controlled cooldown behavior.
+- Extended GUI detector panel with setup age, reclaim hold, and last invalid reason.
 
-## Detector logic (LONG stop hunt)
-Основной сценарий:
-1. Проверка достаточности fast/mid данных.
-2. Отсев stale и высокого spread.
-3. Фиксация sweep при достаточном падении (drop).
-4. Подтверждение reclaim через bounce + возврат цены выше reclaim-level.
-5. Проверка impulse speed, anti-trend (mid drop), удержания reclaim (`RECLAIM_HOLD_MS`) и отсутствия нового low.
-6. Если `score >= SIGNAL_MIN_SCORE` и все hard-фильтры пройдены — `detected=true`, `side=LONG`, `phase=LONG_SIGNAL`.
+## Detector lifecycle
+NO_SETUP -> WATCHING_DROP -> LIQUIDITY_SWEEP -> RECLAIM_WAIT -> RECLAIM_CONFIRMED -> LONG_SIGNAL
 
-## Config thresholds
-- `MIN_GRAB_DROP_PCT = 0.08`
-- `MIN_RECLAIM_BOUNCE_PCT = 0.04`
-- `MIN_IMPULSE_SPEED_PCT_PER_SEC = 0.01`
-- `MAX_TREND_DROP_MID_PCT = 0.35`
-- `RECLAIM_HOLD_MS = 1500`
-- `SIGNAL_MIN_SCORE = 70.0`
-- `DETECTOR_LOG_INTERVAL_MS = 2000`
+Invalidation path:
+- INVALIDATED on stale/high spread/dangerous trend/reclaim timeout/setup too old/new low after reclaim.
 
-## Files changed
-- app/detector.py
-- app/signals.py
-- app/strategy/liquidity_grab_fsm.py
-- app/gui/main_window.py
-- app/gui/widgets.py
-- app/config.py
-- README.md
-- HANDOFF.md
+## Tests added
+- `tests/test_detector.py`
+  - test_waiting_data_no_signal
+  - test_drop_too_small_no_signal
+  - test_sweep_then_reclaim_long_signal
+  - test_slow_trend_blocks_signal
+  - test_new_low_after_reclaim_invalidates
+  - test_high_spread_resets_setup
 
 ## Known limitations
-- Торгового контура всё ещё нет (и намеренно): сигнал только отображается.
-- Detector сфокусирован на LONG stop-hunt сценарии; SHORT ветка не реализована.
-- Валидация на исторических dataset/replay ещё не встроена.
+- Tests are unit-level and do not emulate full WS timing dynamics.
+- Reclaim hold timing is still wall-clock dependent in detector runtime.
 
 ## Next recommended step
-v0.4.0: **Signal Recorder + Replay Dataset**
-- записывать поток ticks и detector snapshots,
-- прогонять replay для калибровки thresholds/score,
-- формировать baseline precision/false-positive метрик до любых execution-фич.
+v0.4.0 — Signal Recorder + Replay Dataset

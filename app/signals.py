@@ -13,3 +13,6 @@ class LiquidityGrabSignal:
     reason_codes: list[str] = field(default_factory=list)
     human_reason: str = "Waiting setup"
     ts_ms: int = 0
+    setup_age_ms: int = 0
+    reclaim_hold_ms: int = 0
+    last_invalid_reason: str = "-"
