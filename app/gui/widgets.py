@@ -6,3 +6,9 @@ def kv_label(name: str, value: str = "-") -> tuple[QLabel, QLabel]:
     v = QLabel(value)
     v.setStyleSheet("font-weight: 600;")
     return k, v
+
+
+def wrapped_value(value: str = "-") -> QLabel:
+    label = QLabel(value)
+    label.setWordWrap(True)
+    return label
