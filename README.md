@@ -100,3 +100,11 @@ v0.4.4 — Replay Timeline GUI / calibration presets.
 - Добавлены reason codes и component-based quality score для объяснимости.
 - Raw `LONG_SIGNAL` больше не равен торговому сигналу: это только вход в pipeline качества.
 - Live trading по-прежнему запрещён: v0.4.6 не отправляет реальные ордера, не использует API keys и не делает position sizing.
+
+## v0.4.6.1 — Analyzer Math Fix + Post-Signal Performance
+
+- Исправлена логика PS Reclaim rate: раньше смешивались `ticks/events` и `unique setups`, что могло давать значения >100%.
+- Теперь post-sweep метрики разделены на тик-счётчики и уникальные сетапы, а `reclaim_success_rate_pct`/`signal_success_rate_pct` считаются только как `unique/unique`.
+- Добавлен offline post-signal analysis по session jsonl: 1s/3s/5s/10s return, max favorable/adverse за 10s, агрегация по grade.
+- Это по-прежнему аналитика (post-session), а не real paper/live execution.
+- Этап v0.5.0 остаётся следующим и не реализуется в этой версии.
