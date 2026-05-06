@@ -1,15 +1,15 @@
-# bTest v0.4.3 — Session Analyzer / Threshold Calibration Report
+# bTest v0.4.4 — Session Analyzer / Threshold Calibration Report
 
 bTest is a detector-focused prototype for BTCUSDT liquidity-grab analysis.
 
-## Scope in v0.4.3
+## Scope in v0.4.4
 - No live trading.
 - No API keys.
 - No paper execution.
 - Recorder/replay flow remains supported.
 - Detector logic is unchanged; only offline session analysis was added.
 
-## New in v0.4.3: Session Analyzer
+## New in v0.4.4: Session Analyzer
 Analyze recorded `session_*.jsonl` files to understand:
 - why a signal did not appear
 - which conditions block most often
@@ -80,3 +80,12 @@ pytest -q
 
 ## Next step
 v0.4.4 — Replay Timeline GUI / calibration presets.
+
+
+## Calibration flow (GUI)
+1. Click **ANALYZE SESSION** and select `session_*.jsonl`.
+2. Analyzer builds `CALIBRATED` suggestion from p95 drop/bounce/speed plus near-signal blockers.
+3. Log shows: `Suggested CALIBRATED profile: drop=X bounce=Y speed=Z score=S`.
+4. Click **APPLY CALIBRATION** to apply suggested thresholds to active detector profile.
+5. Active profile label switches to `CALIBRATED` (profile combo may remain unchanged).
+

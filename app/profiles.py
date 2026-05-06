@@ -52,7 +52,10 @@ DEBUG_ULTRA = ThresholdProfile(
     signal_min_score=55,
 )
 
-PROFILES = {
-    profile.name: profile
-    for profile in (CONSERVATIVE, BALANCED, SENSITIVE, DEBUG_ULTRA)
-}
+PROFILES = {profile.name: profile for profile in (CONSERVATIVE, BALANCED, SENSITIVE, DEBUG_ULTRA)}
+
+
+def get_profile(profile_name: str, custom_profiles: dict[str, ThresholdProfile] | None = None) -> ThresholdProfile:
+    if custom_profiles and profile_name in custom_profiles:
+        return custom_profiles[profile_name]
+    return PROFILES[profile_name]

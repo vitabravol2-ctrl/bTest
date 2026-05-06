@@ -41,6 +41,7 @@ from app.recorder import SignalRecorder
 from app.replay import ReplayEngine
 from app.session_analyzer import SessionAnalyzer
 from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
+from app.calibration import CalibrationSuggestion
 from app.profiles import PROFILES
 
 
@@ -67,6 +68,7 @@ class MainWindow(QMainWindow):
         self.logger = setup_logging(self.append_log)
         self._last_analysis_log_ms = 0
         self._last_detector_log_ms = 0
+        self.last_calibration_suggestion: CalibrationSuggestion | None = None
 
         self.ws = MarketWSClient(self.logger)
         self.ws.tick_received.connect(self.on_tick)
@@ -193,12 +195,14 @@ class MainWindow(QMainWindow):
         self.btn_clear = QPushButton("CLEAR LOG")
         self.btn_load_replay = QPushButton("LOAD REPLAY")
         self.btn_analyze_session = QPushButton("ANALYZE SESSION")
+        self.btn_apply_calibration = QPushButton("APPLY CALIBRATION")
         self.btn_connect.clicked.connect(lambda: asyncio.create_task(self.ws.connect()))
         self.btn_disconnect.clicked.connect(lambda: asyncio.create_task(self.ws.disconnect()))
         self.btn_clear.clicked.connect(self.log_view.clear)
         self.btn_load_replay.clicked.connect(self.load_replay_file)
         self.btn_analyze_session.clicked.connect(self.analyze_session_file)
-        for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_analyze_session, self.btn_clear):
+        self.btn_apply_calibration.clicked.connect(self.apply_calibration)
+        for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_analyze_session, self.btn_apply_calibration, self.btn_clear):
             btn.setMinimumHeight(34)
             top.addWidget(btn)
 
@@ -564,10 +568,28 @@ class MainWindow(QMainWindow):
         analyzer = SessionAnalyzer()
         analyzer.load(path)
         data = analyzer.analyze()
+        suggested = analyzer.suggest_profile()
+        self.last_calibration_suggestion = CalibrationSuggestion(
+            name=suggested["name"],
+            min_grab_drop_pct=float(suggested["min_grab_drop_pct"]),
+            min_reclaim_bounce_pct=float(suggested["min_reclaim_bounce_pct"]),
+            min_impulse_speed_pct_per_sec=float(suggested["min_impulse_speed_pct_per_sec"]),
+            max_trend_drop_mid_pct=float(suggested["max_trend_drop_mid_pct"]),
+            max_slow_trend_drop_pct=float(suggested["max_slow_trend_drop_pct"]),
+            signal_min_score=float(suggested["signal_min_score"]),
+            reasons=list(suggested.get("reason", [])),
+        )
         report_path = Path(path).with_name(f"{Path(path).stem}_report.txt")
         analyzer.export_report(report_path)
         blockers = data.get("near_signal_blockers", {})
         top_blocker = max(blockers.items(), key=lambda x: x[1])[0] if blockers else "none"
+        self.logger.info(
+            "Suggested CALIBRATED profile: drop=%.5f bounce=%.5f speed=%.5f score=%.0f",
+            self.last_calibration_suggestion.min_grab_drop_pct,
+            self.last_calibration_suggestion.min_reclaim_bounce_pct,
+            self.last_calibration_suggestion.min_impulse_speed_pct_per_sec,
+            self.last_calibration_suggestion.signal_min_score,
+        )
         self.logger.info(
             "Session analysis complete: total_events=%d max_score=%.2f detected_count=%d top_blocker=%s report=%s",
             data.get("total_events", 0),
@@ -575,6 +597,25 @@ class MainWindow(QMainWindow):
             data.get("detected_count", 0),
             top_blocker,
             report_path,
+        )
+
+    def apply_calibration(self) -> None:
+        if self.last_calibration_suggestion is None:
+            self.logger.warning("No calibration suggestion available. Run ANALYZE SESSION first.")
+            return
+
+        profile = self.last_calibration_suggestion.to_profile()
+        self.detector.set_profile(profile)
+        self.lbl_profile.setText(profile.name)
+        self.lbl_drop_threshold.setText(f"{profile.min_grab_drop_pct:.3f}")
+        self.lbl_bounce_threshold.setText(f"{profile.min_reclaim_bounce_pct:.3f}")
+        self.lbl_score_threshold.setText(f"{profile.signal_min_score:.0f}")
+        self.logger.info(
+            "Applied CALIBRATED profile: drop=%.5f bounce=%.5f speed=%.5f score=%.0f",
+            profile.min_grab_drop_pct,
+            profile.min_reclaim_bounce_pct,
+            profile.min_impulse_speed_pct_per_sec,
+            profile.signal_min_score,
         )
 
 
