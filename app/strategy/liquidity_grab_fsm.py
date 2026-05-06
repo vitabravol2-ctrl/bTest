@@ -1,19 +1,14 @@
 from dataclasses import dataclass
 from enum import Enum
 
-from app.models import MarketTick
+from app.config import MAX_ALLOWED_SPREAD_PCT
+from app.metrics import MarketMetrics
 
 
 class FSMState(str, Enum):
     INIT = "INIT"
     IDLE = "IDLE"
     WATCHING = "WATCHING"
-    DROP_DETECTED = "DROP_DETECTED"
-    RECLAIM_WAIT = "RECLAIM_WAIT"
-    ENTRY_READY = "ENTRY_READY"
-    PAPER_POSITION = "PAPER_POSITION"
-    EXIT = "EXIT"
-    COOLDOWN = "COOLDOWN"
 
 
 @dataclass(slots=True)
@@ -24,14 +19,20 @@ class FSMResult:
 
 
 class LiquidityGrabFSM:
-    def __init__(self) -> None:
+    def __init__(self, max_allowed_spread_pct: float = MAX_ALLOWED_SPREAD_PCT) -> None:
         self.state = FSMState.INIT
+        self.max_allowed_spread_pct = max_allowed_spread_pct
 
-    def on_tick(self, _: MarketTick) -> FSMResult:
+    def evaluate(self, metrics: MarketMetrics) -> FSMResult:
         if self.state == FSMState.INIT:
             self.state = FSMState.IDLE
-        return FSMResult(
-            state=self.state.value,
-            signal="NO_SIGNAL",
-            reason="core kernel only",
-        )
+
+        if not metrics.enough_data:
+            return FSMResult(self.state.value, "DATA_WAITING", "Not enough ticks in fast window")
+        if metrics.stale:
+            return FSMResult(self.state.value, "DATA_STALE", "Last tick is stale")
+        if metrics.spread_avg_pct > self.max_allowed_spread_pct:
+            return FSMResult(self.state.value, "HIGH_SPREAD", "Spread above allowed threshold")
+
+        self.state = FSMState.WATCHING
+        return FSMResult(self.state.value, "WATCHING_MARKET", "Data quality good, monitoring only")
