@@ -105,11 +105,14 @@ class SessionAnalyzer:
                 "invalidation_cooldown_ms": int(reclaim_hints.get("suggested_invalidation_cooldown_ms", 1000)),
             },
         }
+        if int(self.report_data.get("would_signal_count", 0)) > 0 and int(self.report_data.get("detected_count", 0)) == 0:
+            suggested["reason"].append("unlock debug indicates softer bounce/hold may unlock real signals")
         return suggested
 
     def analyze(self, current_profile: dict[str, Any] | None = None) -> dict[str, Any]:
         scores = [float(e.get("score", 0.0)) for e in self.events]
         detected_count = sum(1 for e in self.events if bool(e.get("detected", False)))
+        would_signals = [e for e in self.events if bool(e.get("would_signal", False))]
 
         profile_counts = Counter(str(e.get("profile_name", "UNKNOWN")) for e in self.events)
         phase_counts = Counter(str(e.get("phase", "UNKNOWN")) for e in self.events)
@@ -186,10 +189,16 @@ class SessionAnalyzer:
             if bool(debug.get("hold_ok", False)):
                 pass_hold += 1
 
+        would_signal_reasons = Counter(str(e.get("would_signal_reason", "UNKNOWN")) for e in would_signals if e.get("would_signal_reason"))
+        would_after_sweep = sum(1 for e in would_signals if "SWEEP_FOUND" in (e.get("reason_codes") or []))
         data = {
             "total_events": len(self.events),
             "detected_count": detected_count,
             "max_score": max(scores) if scores else 0.0,
+            "would_signal_count": len(would_signals),
+            "would_signal_after_sweep": would_after_sweep,
+            "would_signal_reasons": dict(would_signal_reasons),
+            "would_signal_rate": (len(would_signals) / len(self.events) * 100.0) if self.events else 0.0,
             "avg_score": mean(scores) if scores else 0.0,
             "profile_counts": dict(profile_counts),
             "phase_counts": dict(phase_counts),
@@ -239,6 +248,26 @@ class SessionAnalyzer:
         }
         p75_hold = data["post_sweep_analysis"]["p75_reclaim_hold_ms"]
         p75_setup = data["post_sweep_analysis"]["p75_setup_age_ms"]
+        top_unlock_blockers = dict(Counter(str(e.get("unlock_blocker", "")) for e in would_signals if e.get("unlock_blocker")).most_common(5))
+        avg_would_score = mean([float(e.get("score", 0.0)) for e in would_signals]) if would_signals else 0.0
+        recommendation = "STILL_NO_SIGNAL"
+        if len(would_signals) > 0 and detected_count == 0:
+            reasons = dict(would_signal_reasons)
+            if reasons.get("WOULD_SIGNAL_HOLD", 0) >= reasons.get("WOULD_SIGNAL_BOUNCE", 0):
+                recommendation = "HOLD_TOO_STRICT"
+            else:
+                recommendation = "BOUNCE_TOO_STRICT"
+        elif detected_count > 0:
+            recommendation = "SIGNAL_READY"
+        data["signal_unlock_analysis"] = {
+            "would_signals": len(would_signals),
+            "would_signals_after_sweep": would_after_sweep,
+            "top_unlock_blockers": top_unlock_blockers,
+            "avg_would_signal_score": avg_would_score,
+            "reclaim_success_before_would_signal": data["post_sweep_analysis"]["reclaim_success_rate"],
+            "recommendation": recommendation,
+        }
+
         data["reclaim_hints"] = {
             "suggested_min_reclaim_hold_ms": int(max(100, min(800, p75_hold * 0.70))) if p75_hold > 0 else 150,
             "suggested_reclaim_window_ms": int(max(1000, min(8000, p75_setup * 1.50))) if p75_setup > 0 else 3000,
@@ -408,6 +437,7 @@ class SessionAnalyzer:
                     f"  reason: {validation.get('reason', '-')}",
                 ]
             )
+        lines.extend(["", "SIGNAL UNLOCK ANALYSIS", f"  would signals: {data.get('would_signal_count', 0)}", f"  would signals after sweep: {data.get('would_signal_after_sweep', 0)}", f"  would signal reasons: {data.get('would_signal_reasons', {})}", f"  would signal rate: {data.get('would_signal_rate', 0.0):.2f}%", f"  top unlock blockers: {(data.get('signal_unlock_analysis', {}) or {}).get('top_unlock_blockers', {})}", f"  avg would-signal score: {(data.get('signal_unlock_analysis', {}) or {}).get('avg_would_signal_score', 0.0):.2f}", f"  reclaim success before would-signal: {(data.get('signal_unlock_analysis', {}) or {}).get('reclaim_success_before_would_signal', 0.0):.2f}%", f"  recommendation: {(data.get('signal_unlock_analysis', {}) or {}).get('recommendation', 'STILL_NO_SIGNAL')}"])
         lines.extend(
             [
                 "",

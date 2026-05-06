@@ -189,3 +189,10 @@ def test_validation_detects_hold_too_strict(tmp_path):
     current = {"name": "CUSTOM", "min_grab_drop_pct": 0.01, "min_reclaim_bounce_pct": 0.01, "min_impulse_speed_pct_per_sec": 0.001, "signal_min_score": 70}
     result = analyzer.validate_calibration_before_after(current, {"name": "CALIBRATED"})
     assert result["recommendation"] == "HOLD_TOO_STRICT"
+
+def test_report_contains_signal_unlock_analysis(tmp_path):
+    p = tmp_path / "session_unlock_report.jsonl"
+    write_jsonl(p, [{"score": 80, "detected": False, "would_signal": True, "would_signal_reason": "WOULD_SIGNAL_HOLD", "phase": "RECLAIM_WAIT", "reason_codes": ["SWEEP_FOUND"], "debug": {"drop_ok": True, "bounce_ok": True, "speed_ok": True, "reclaim_ok": True, "hold_ok": False, "slow_trend_ok": True}}])
+    analyzer = SessionAnalyzer(); analyzer.load(p); analyzer.analyze()
+    assert "SIGNAL UNLOCK ANALYSIS" in analyzer.report_text
+    assert analyzer.report_data["would_signal_count"] == 1
