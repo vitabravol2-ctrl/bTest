@@ -116,3 +116,11 @@ v0.4.4 — Replay Timeline GUI / calibration presets.
 - This improves repeatability of research and prepares data interfaces for v0.5.0 Real Paper Trading Engine.
 - This release is **not live trading**: no real orders, no Binance keys, no position sizing, no risk execution.
 - Next stage (v0.5.0): integrate a dedicated Real Paper Trading Engine on top of enriched analytics.
+
+## v0.4.6.3 — Trading Base Cleanup + Paper Engine Skeleton
+
+- Profiles are fully cleaned: only `BASELINE` remains in `app/profiles.py` with legacy-name fallback via `get_profile()`.
+- Added `TradePlan` data layer (`app/trade_plan.py`) for future paper workflows.
+- Added `PaperEngine` skeleton (`app/paper_engine.py`) that only builds offline plan previews (no orders, no balances, no Binance integration).
+- Added SessionAnalyzer paper-plan preview and `paper_plan_*` fields in enriched JSONL.
+- This is **not** full paper trading v0.5.0; this is preparation for v0.5.0.
