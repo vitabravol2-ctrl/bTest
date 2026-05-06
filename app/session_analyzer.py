@@ -186,9 +186,108 @@ class SessionAnalyzer:
         self.report_data = data
         suggested = self.suggest_profile()
         data["suggested_profile"] = suggested
+        data["calibration_validation"] = self.validate_calibration_before_after(
+            current_profile=suggested.get("current_profile") or {},
+            suggested_profile=suggested,
+        )
         self.report_data = data
         self.report_text = self._format_report(data)
         return data
+
+    def validate_calibration_before_after(
+        self,
+        current_profile: dict[str, Any],
+        suggested_profile: dict[str, Any],
+        *,
+        min_research_ticks: int = 300,
+        min_sweeps_for_confidence: int = 3,
+        min_near_signals_for_confidence: int = 1,
+    ) -> dict[str, Any]:
+        current = {
+            "min_grab_drop_pct": float(current_profile.get("min_grab_drop_pct", 0.08)),
+            "min_reclaim_bounce_pct": float(current_profile.get("min_reclaim_bounce_pct", 0.04)),
+            "min_impulse_speed_pct_per_sec": float(current_profile.get("min_impulse_speed_pct_per_sec", 0.01)),
+            "signal_min_score": float(current_profile.get("signal_min_score", 70)),
+        }
+        suggested = {
+            "min_grab_drop_pct": float(suggested_profile.get("min_grab_drop_pct", current["min_grab_drop_pct"])),
+            "min_reclaim_bounce_pct": float(suggested_profile.get("min_reclaim_bounce_pct", current["min_reclaim_bounce_pct"])),
+            "min_impulse_speed_pct_per_sec": float(suggested_profile.get("min_impulse_speed_pct_per_sec", current["min_impulse_speed_pct_per_sec"])),
+            "signal_min_score": float(suggested_profile.get("signal_min_score", current["signal_min_score"])),
+        }
+
+        def _pass_counts(profile: dict[str, float]) -> dict[str, int]:
+            pass_drop = pass_bounce = pass_speed = near = 0
+            blockers: Counter[str] = Counter()
+            for e in self.events:
+                drop_ok = float(e.get("drop_pct", 0.0)) >= profile["min_grab_drop_pct"]
+                bounce_ok = float(e.get("bounce_pct", 0.0)) >= profile["min_reclaim_bounce_pct"]
+                speed_ok = abs(float(e.get("speed", 0.0))) >= profile["min_impulse_speed_pct_per_sec"]
+                score = float(e.get("score", 0.0))
+                if drop_ok:
+                    pass_drop += 1
+                if bounce_ok:
+                    pass_bounce += 1
+                if speed_ok:
+                    pass_speed += 1
+                if drop_ok and bounce_ok and speed_ok and score >= profile["signal_min_score"] and not bool(e.get("detected", False)):
+                    near += 1
+                if score >= 50.0 and not bool(e.get("detected", False)):
+                    if not drop_ok:
+                        blockers["drop_ok"] += 1
+                    elif not bounce_ok:
+                        blockers["bounce_ok"] += 1
+                    elif not speed_ok:
+                        blockers["speed_ok"] += 1
+            return {"pass_drop": pass_drop, "pass_bounce": pass_bounce, "pass_speed": pass_speed, "near": near, "blockers": dict(blockers)}
+
+        current_stats = _pass_counts(current)
+        suggested_stats = _pass_counts(suggested)
+        total_events = len(self.events)
+        sweeps_found = sum(1 for e in self.events if str(e.get("phase", "")) == "LIQUIDITY_SWEEP")
+        data_is_small = (
+            total_events < min_research_ticks
+            or sweeps_found < min_sweeps_for_confidence
+            or max(current_stats["near"], suggested_stats["near"]) < min_near_signals_for_confidence
+        )
+        delta_near = suggested_stats["near"] - current_stats["near"]
+        too_soft = (
+            suggested["min_grab_drop_pct"] < 0.003
+            or suggested["min_reclaim_bounce_pct"] < 0.002
+            or suggested["min_impulse_speed_pct_per_sec"] < 0.0003
+        )
+        if data_is_small:
+            recommendation = "NEED_MORE_DATA"
+            confidence = "LOW"
+            reason = "insufficient session size or setup count"
+        elif delta_near > 0 and not too_soft:
+            recommendation = "APPLY_RECOMMENDED"
+            confidence = "HIGH"
+            reason = "near signals improved with non-extreme thresholds"
+        else:
+            recommendation = "DO_NOT_APPLY"
+            confidence = "MEDIUM"
+            reason = "no meaningful near-signal improvement"
+        return {
+            "current_profile": current_profile.get("name", "CURRENT"),
+            "suggested_profile": suggested_profile.get("name", "CALIBRATED"),
+            "total_events": total_events,
+            "current_pass_drop": current_stats["pass_drop"],
+            "suggested_pass_drop": suggested_stats["pass_drop"],
+            "current_pass_bounce": current_stats["pass_bounce"],
+            "suggested_pass_bounce": suggested_stats["pass_bounce"],
+            "current_pass_speed": current_stats["pass_speed"],
+            "suggested_pass_speed": suggested_stats["pass_speed"],
+            "current_near_signal_count": current_stats["near"],
+            "suggested_near_signal_count": suggested_stats["near"],
+            "blockers_before": current_stats["blockers"],
+            "blockers_after": suggested_stats["blockers"],
+            "delta_near_signals": delta_near,
+            "recommendation": recommendation,
+            "confidence": confidence,
+            "reason": reason,
+            "auto_apply": False,
+        }
 
     def _format_report(self, data: dict[str, Any]) -> str:
         def fmt_counter(counter_dict: dict[str, Any]) -> str:
@@ -211,6 +310,26 @@ class SessionAnalyzer:
         lines.extend(["", "=== SUGGESTED CALIBRATED PROFILE ===", f"Suggested drop={suggested['min_grab_drop_pct']:.3f}", f"Suggested bounce={suggested['min_reclaim_bounce_pct']:.3f}", f"Suggested speed={suggested['min_impulse_speed_pct_per_sec']:.3f}", f"Suggested score={suggested['signal_min_score']:.0f}", f"source p95 drop={hints['p95_drop_pct']:.5f}", f"source p95 bounce={hints['p95_bounce_pct']:.5f}", f"source near median bounce={hints['near_signal_bounce_median']:.5f}", f"source p75 abs speed={hints['p75_abs_speed']:.5f}", "Reasons:"])
         for reason in suggested.get("reason", []):
             lines.append(f"  - {reason}")
+        validation = data.get("calibration_validation", {})
+        if validation:
+            lines.extend(
+                [
+                    "",
+                    "CALIBRATION VALIDATION",
+                    f"  current profile: {validation.get('current_profile', '-')}",
+                    f"  suggested profile: {validation.get('suggested_profile', '-')}",
+                    f"  total events: {validation.get('total_events', 0)}",
+                    f"  pass drop before/after: {validation.get('current_pass_drop', 0)}/{validation.get('suggested_pass_drop', 0)}",
+                    f"  pass bounce before/after: {validation.get('current_pass_bounce', 0)}/{validation.get('suggested_pass_bounce', 0)}",
+                    f"  pass speed before/after: {validation.get('current_pass_speed', 0)}/{validation.get('suggested_pass_speed', 0)}",
+                    f"  near signals before/after: {validation.get('current_near_signal_count', 0)}/{validation.get('suggested_near_signal_count', 0)}",
+                    f"  blockers before: {validation.get('blockers_before', {})}",
+                    f"  blockers after: {validation.get('blockers_after', {})}",
+                    f"  recommendation: {validation.get('recommendation', '-')}",
+                    f"  confidence: {validation.get('confidence', '-')}",
+                    f"  reason: {validation.get('reason', '-')}",
+                ]
+            )
         return "\n".join(lines) + "\n"
 
     def export_report(self, path: str | Path) -> Path:

@@ -32,6 +32,10 @@ from app.config import (
     STALE_AFTER_MS,
     STALE_MS,
     SYMBOL,
+    MIN_RESEARCH_SECONDS,
+    MIN_RESEARCH_TICKS,
+    MIN_SWEEPS_FOR_CONFIDENCE,
+    MIN_NEAR_SIGNALS_FOR_CONFIDENCE,
 )
 from app.detector import LiquidityGrabDetector
 from app.logger import setup_logging
@@ -43,6 +47,7 @@ from app.session_analyzer import SessionAnalyzer
 from app.strategy.liquidity_grab_fsm import LiquidityGrabFSM
 from app.calibration import CalibrationSuggestion
 from app.profiles import PROFILES
+from app.research_pipeline import AutoResearchPipeline
 
 
 class MainWindow(QMainWindow):
@@ -69,6 +74,9 @@ class MainWindow(QMainWindow):
         self._last_analysis_log_ms = 0
         self._last_detector_log_ms = 0
         self.last_calibration_suggestion: CalibrationSuggestion | None = None
+        self.research_pipeline = AutoResearchPipeline()
+        self.auto_research_active = False
+        self.auto_research_started_ms = 0
 
         self.ws = MarketWSClient(self.logger)
         self.ws.tick_received.connect(self.on_tick)
@@ -196,13 +204,15 @@ class MainWindow(QMainWindow):
         self.btn_load_replay = QPushButton("LOAD REPLAY")
         self.btn_analyze_session = QPushButton("ANALYZE SESSION")
         self.btn_apply_calibration = QPushButton("APPLY CALIBRATION")
+        self.btn_start_auto_research = QPushButton("START AUTO RESEARCH")
         self.btn_connect.clicked.connect(lambda: asyncio.create_task(self.ws.connect()))
         self.btn_disconnect.clicked.connect(lambda: asyncio.create_task(self.ws.disconnect()))
         self.btn_clear.clicked.connect(self.log_view.clear)
         self.btn_load_replay.clicked.connect(self.load_replay_file)
         self.btn_analyze_session.clicked.connect(self.analyze_session_file)
         self.btn_apply_calibration.clicked.connect(self.apply_calibration)
-        for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_analyze_session, self.btn_apply_calibration, self.btn_clear):
+        self.btn_start_auto_research.clicked.connect(self.start_auto_research)
+        for btn in (self.btn_connect, self.btn_disconnect, self.btn_load_replay, self.btn_analyze_session, self.btn_apply_calibration, self.btn_start_auto_research, self.btn_clear):
             btn.setMinimumHeight(34)
             top.addWidget(btn)
 
@@ -340,6 +350,36 @@ class MainWindow(QMainWindow):
 
         ag.addWidget(QLabel("FSM state"), row, 0)
         ag.addWidget(self.lbl_state, row, 1)
+        row += 1
+        ag.addWidget(QLabel("Research step"), row, 0)
+        self.lbl_research_step = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+        ag.addWidget(self.lbl_research_step, row, 1)
+        row += 1
+        self.bar_research_progress = QProgressBar()
+        self.bar_research_progress.setRange(0, 100)
+        self.bar_research_progress.setValue(0)
+        ag.addWidget(QLabel("Auto Research Progress"), row, 0)
+        ag.addWidget(self.bar_research_progress, row, 1)
+        row += 1
+        self.lbl_research_status = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_research_ticks = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_research_session = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_research_sweeps = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_research_near = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_research_blocker = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_research_action = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_research_conf = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
+        for title, label in (
+            ("Status", self.lbl_research_status),
+            ("Ticks", self.lbl_research_ticks),
+            ("Session time", self.lbl_research_session),
+            ("Sweeps", self.lbl_research_sweeps),
+            ("Near-signals", self.lbl_research_near),
+            ("Top blocker", self.lbl_research_blocker),
+            ("Suggested action", self.lbl_research_action),
+            ("Confidence", self.lbl_research_conf),
+        ):
+            ag.addWidget(QLabel(title), row, 0); ag.addWidget(label, row, 1); row += 1
 
         body.addWidget(market_card)
         body.addWidget(radar_card, 1)
@@ -438,6 +478,7 @@ class MainWindow(QMainWindow):
         signal = self.detector.detect(m["fast"], m["mid"], m["slow"], self.buffer)
         result = self.fsm.evaluate(signal)
         self.recorder.record_tick(tick, fast_metrics, signal, result.state, self.detector.profile)
+        self._process_auto_research_tick(tick.ts_ms, signal)
 
         self.lbl_fast_drop.setText(f"{fast_metrics.drop_pct:.5f}")
         self.lbl_fast_bounce.setText(f"{fast_metrics.bounce_pct:.5f}")
@@ -533,6 +574,65 @@ class MainWindow(QMainWindow):
                         blocked_name = name
                         break
                 self.logger.warning("NEAR SIGNAL but blocked by: %s", blocked_name)
+
+    def start_auto_research(self) -> None:
+        self.auto_research_active = True
+        self.auto_research_started_ms = int(time.time() * 1000)
+        self.research_pipeline.start()
+        self._render_research_progress()
+        asyncio.create_task(self.ws.connect())
+        self.logger.info("Auto research pipeline started")
+
+    def _process_auto_research_tick(self, tick_ts_ms: int, signal) -> None:
+        if not self.auto_research_active:
+            return
+        elapsed = max(0, (tick_ts_ms - self.auto_research_started_ms) // 1000)
+        ticks = len(self.recorder.events)
+        sweeps = sum(1 for e in self.recorder.events if e.get("phase") == "LIQUIDITY_SWEEP")
+        near_signals = sum(1 for e in self.recorder.events if float(e.get("score", 0.0)) >= 50.0 and not bool(e.get("detected", False)))
+        blocker = "-"
+        debug = signal.debug or {}
+        for flag in ("drop_ok", "bounce_ok", "speed_ok", "reclaim_ok", "hold_ok", "slow_trend_ok"):
+            if not bool(debug.get(flag, False)):
+                blocker = flag
+                break
+        self.research_pipeline.set_collecting()
+        self.research_pipeline.set_warmup(ticks, elapsed)
+        self.research_pipeline.set_detecting(sweeps, near_signals, blocker)
+        if elapsed >= MIN_RESEARCH_SECONDS and ticks >= MIN_RESEARCH_TICKS:
+            self.research_pipeline.set_analyzing()
+            analyzer = SessionAnalyzer()
+            analyzer.events = list(self.recorder.events)
+            data = analyzer.analyze()
+            self.research_pipeline.set_validating()
+            validation = analyzer.validate_calibration_before_after(
+                current_profile=self.detector.profile.__dict__,
+                suggested_profile=data["suggested_profile"],
+                min_research_ticks=MIN_RESEARCH_TICKS,
+                min_sweeps_for_confidence=MIN_SWEEPS_FOR_CONFIDENCE,
+                min_near_signals_for_confidence=MIN_NEAR_SIGNALS_FOR_CONFIDENCE,
+            )
+            self.research_pipeline.set_decision(
+                validation["recommendation"],
+                validation["confidence"],
+                validation["reason"],
+            )
+            self.research_pipeline.set_waiting_for_entry()
+            self.auto_research_active = False
+        self._render_research_progress()
+
+    def _render_research_progress(self) -> None:
+        p = self.research_pipeline.progress
+        self.lbl_research_step.setText(p.current_state)
+        self.bar_research_progress.setValue(p.progress_pct)
+        self.lbl_research_status.setText(p.status_text)
+        self.lbl_research_ticks.setText(str(p.ticks_collected))
+        self.lbl_research_session.setText(f"{p.session_seconds}s")
+        self.lbl_research_sweeps.setText(str(p.sweeps_found))
+        self.lbl_research_near.setText(str(p.near_signals_count))
+        self.lbl_research_blocker.setText(p.top_blocker)
+        self.lbl_research_action.setText(p.suggested_action)
+        self.lbl_research_conf.setText(p.confidence)
 
     def refresh_age(self) -> None:
         now = int(time.time() * 1000)
