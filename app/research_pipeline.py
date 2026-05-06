@@ -35,6 +35,11 @@ class ResearchProgress:
 class AutoResearchPipeline:
     def __init__(self) -> None:
         self.progress = ResearchProgress()
+        self._decision_until_ms = 0
+
+    def reset(self) -> None:
+        self.progress = ResearchProgress()
+        self._decision_until_ms = 0
 
     def start(self) -> None:
         self._set_state(ResearchState.CONNECTING, 5, "Connecting to market feed")
@@ -63,6 +68,38 @@ class AutoResearchPipeline:
         self.progress.suggested_action = suggested_action
         self.progress.confidence = confidence
         self._set_state(ResearchState.DECISION, 92, status_text)
+
+    def update_stage(
+        self,
+        *,
+        connected: bool,
+        ticks_collected: int,
+        session_seconds: int,
+        sweeps_found: int,
+        near_signals_count: int,
+        top_blocker: str,
+        min_research_ticks: int,
+        min_research_seconds: int,
+        now_ms: int,
+    ) -> None:
+        self.progress.ticks_collected = ticks_collected
+        self.progress.session_seconds = session_seconds
+        self.progress.sweeps_found = sweeps_found
+        self.progress.near_signals_count = near_signals_count
+        self.progress.top_blocker = top_blocker
+        if self.progress.current_state == ResearchState.DECISION.value and now_ms < self._decision_until_ms:
+            return
+        if not connected:
+            self._set_state(ResearchState.CONNECTING, 5, "Connecting to market feed")
+        elif ticks_collected < max(1, min_research_ticks // 3):
+            self._set_state(ResearchState.COLLECTING_DATA, 15, "Collecting market ticks")
+        elif session_seconds < min_research_seconds or ticks_collected < min_research_ticks:
+            self._set_state(ResearchState.WARMUP, 30, "Warmup in progress")
+        else:
+            self._set_state(ResearchState.DETECTING_SETUPS, 45, "Detecting setups")
+
+    def hold_decision(self, now_ms: int, min_show_ms: int = 3000) -> None:
+        self._decision_until_ms = max(self._decision_until_ms, now_ms + min_show_ms)
 
     def set_waiting_for_entry(self) -> None:
         self._set_state(ResearchState.WAITING_FOR_ENTRY, 100, "Detector waiting for valid signal")
