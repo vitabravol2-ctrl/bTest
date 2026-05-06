@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QProgressBar,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -40,8 +41,8 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("bTest Cockpit — BTCUSDT Liquidity Grab")
-        self.resize(1320, 860)
-        self.setMinimumSize(1180, 760)
+        self.resize(1320, 820)
+        self.setMinimumSize(1180, 720)
 
         self.buffer = MarketBuffer(maxlen=MAX_BUFFER)
         self.fsm = LiquidityGrabFSM()
@@ -52,7 +53,7 @@ class MainWindow(QMainWindow):
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setMaximumHeight(180)
+        self.log_view.setMaximumHeight(130)
         self.log_view.setObjectName("logView")
         self.logger = setup_logging(self.append_log)
         self._last_analysis_log_ms = 0
@@ -75,22 +76,46 @@ class MainWindow(QMainWindow):
         card = QFrame()
         card.setObjectName("card")
         wrap = QVBoxLayout(card)
-        wrap.setContentsMargins(14, 12, 14, 12)
+        wrap.setContentsMargins(12, 10, 12, 10)
+        wrap.setSpacing(8)
         title_lbl = QLabel(title)
         title_lbl.setObjectName("cardTitle")
         wrap.addWidget(title_lbl)
         grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(8)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
         wrap.addLayout(grid)
         return card, grid
 
-    def _make_value_label(self, size: int = 12) -> QLabel:
+    def _make_value_label(self, size: int = 12, align: Qt.AlignmentFlag | None = None) -> QLabel:
         lbl = QLabel("-")
         lbl.setObjectName("value")
         lbl.setProperty("size", str(size))
-        lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lbl.setAlignment((align or Qt.AlignmentFlag.AlignRight) | Qt.AlignmentFlag.AlignVCenter)
         return lbl
+
+    def _create_led(self, label_text: str, initial_status: str = "off") -> tuple[QFrame, QLabel]:
+        row = QFrame()
+        row.setObjectName("ledRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        lamp = QFrame()
+        lamp.setObjectName("ledLamp")
+        lamp.setProperty("status", initial_status)
+        lamp.setFixedSize(16, 16)
+        name = QLabel(label_text)
+        name.setObjectName("ledLabel")
+        row_layout.addWidget(lamp)
+        row_layout.addWidget(name)
+        row_layout.addStretch(1)
+        return lamp, name
+
+    def _set_led(self, led: QFrame, status: str) -> None:
+        led.setProperty("status", status)
+        led.style().unpolish(led)
+        led.style().polish(led)
 
     def _set_badge(self, label: QLabel, text: str, status: str) -> None:
         label.setText(text)
@@ -102,20 +127,34 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
 
         top = QHBoxLayout()
         self.lbl_title = QLabel("bTest Cockpit — BTCUSDT Liquidity Grab")
         self.lbl_title.setObjectName("appTitle")
-        top.addWidget(self.lbl_title, 1)
+        top.addWidget(self.lbl_title)
 
-        self.badge_ws = QLabel("DISCONNECTED")
-        self.badge_quality = QLabel("WAITING")
-        self.badge_phase = QLabel("NO_SETUP")
-        for b in (self.badge_ws, self.badge_quality, self.badge_phase):
-            b.setObjectName("badge")
-            top.addWidget(b)
+        self.led_ws, _ = self._create_led("WS")
+        self.led_data, _ = self._create_led("DATA")
+        self.led_drop, _ = self._create_led("DROP")
+        self.led_sweep, _ = self._create_led("SWEEP")
+        self.led_reclaim, _ = self._create_led("RECLAIM")
+        self.led_signal, _ = self._create_led("SIGNAL")
+        self.led_block, _ = self._create_led("BLOCK")
+
+        for led in (
+            self.led_ws,
+            self.led_data,
+            self.led_drop,
+            self.led_sweep,
+            self.led_reclaim,
+            self.led_signal,
+            self.led_block,
+        ):
+            top.addWidget(led.parentWidget())
+
+        top.addStretch(1)
 
         self.btn_connect = QPushButton("CONNECT")
         self.btn_disconnect = QPushButton("DISCONNECT")
@@ -124,16 +163,16 @@ class MainWindow(QMainWindow):
         self.btn_disconnect.clicked.connect(lambda: asyncio.create_task(self.ws.disconnect()))
         self.btn_clear.clicked.connect(self.log_view.clear)
         for btn in (self.btn_connect, self.btn_disconnect, self.btn_clear):
-            btn.setMinimumHeight(40)
+            btn.setMinimumHeight(34)
             top.addWidget(btn)
 
         layout.addLayout(top)
 
         body = QHBoxLayout()
-        body.setSpacing(10)
+        body.setSpacing(8)
 
         market_card, mg = self._make_card("MARKET")
-        market_card.setMinimumWidth(360)
+        market_card.setMinimumWidth(320)
         self.lbl_symbol = self._make_value_label(14)
         self.lbl_symbol.setText(SYMBOL)
         self.lbl_last = self._make_value_label(30)
@@ -142,71 +181,97 @@ class MainWindow(QMainWindow):
         self.lbl_spread = self._make_value_label(16)
         self.lbl_age = self._make_value_label(12)
         self.lbl_tick_rate = self._make_value_label(12)
-        for i, (k, v) in enumerate(
-            [
-                ("Symbol", self.lbl_symbol),
-                ("Last Price", self.lbl_last),
-                ("Bid", self.lbl_bid),
-                ("Ask", self.lbl_ask),
-                ("Spread %", self.lbl_spread),
-                ("Tick age", self.lbl_age),
-                ("Tick rate", self.lbl_tick_rate),
-            ]
-        ):
-            mg.addWidget(QLabel(k), i, 0)
-            mg.addWidget(v, i, 1)
+        self.led_tick_age, _ = self._create_led("")
+
+        mg.addWidget(QLabel("Symbol"), 0, 0)
+        mg.addWidget(self.lbl_symbol, 0, 1)
+        mg.addWidget(QLabel("Last Price"), 1, 0)
+        mg.addWidget(self.lbl_last, 1, 1)
+        mg.addWidget(QLabel("Bid"), 2, 0)
+        mg.addWidget(self.lbl_bid, 2, 1)
+        mg.addWidget(QLabel("Ask"), 3, 0)
+        mg.addWidget(self.lbl_ask, 3, 1)
+        mg.addWidget(QLabel("Spread %"), 4, 0)
+        mg.addWidget(self.lbl_spread, 4, 1)
+        mg.addWidget(QLabel("Tick age"), 5, 0)
+        age_wrap = QHBoxLayout()
+        age_wrap.setContentsMargins(0, 0, 0, 0)
+        age_wrap.addWidget(self.led_tick_age)
+        age_wrap.addWidget(self.lbl_age, 1)
+        mg.addLayout(age_wrap, 5, 1)
+        mg.addWidget(QLabel("Tick rate"), 6, 0)
+        mg.addWidget(self.lbl_tick_rate, 6, 1)
 
         radar_card, dg = self._make_card("DETECTOR RADAR")
-        radar_card.setMinimumWidth(520)
-        self.lbl_det_phase = self._make_value_label(22)
-        self.lbl_det_score = self._make_value_label(28)
-        self.lbl_det_side = self._make_value_label(14)
-        self.lbl_signal = self._make_value_label(14)
-        self.lbl_reason = self._make_value_label(12)
-        self.lbl_reason.setWordWrap(True)
-        self.lbl_reason_codes = self._make_value_label(11)
+        radar_card.setMinimumWidth(540)
+        self.lbl_det_phase = self._make_value_label(22, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_det_score = self._make_value_label(30, Qt.AlignmentFlag.AlignLeft)
+        self.score_bar = QProgressBar()
+        self.score_bar.setRange(0, 100)
+        self.score_bar.setValue(0)
+        self.score_bar.setTextVisible(True)
+        self.score_bar.setFormat("%p%")
+        self.lbl_signal = self._make_value_label(16)
+        self.lbl_reason = self._make_value_label(14, Qt.AlignmentFlag.AlignLeft)
+        self.lbl_reason_codes = self._make_value_label(11, Qt.AlignmentFlag.AlignLeft)
         self.lbl_reason_codes.setWordWrap(True)
-        self.lbl_reason_codes.setMaximumHeight(52)
+        self.lbl_reason_codes.setMaximumHeight(44)
         self.lbl_setup_age = self._make_value_label(12)
         self.lbl_reclaim_hold = self._make_value_label(12)
-        self.lbl_last_invalid = self._make_value_label(12)
-        self.lbl_last_invalid.setWordWrap(True)
-        for i, (k, v) in enumerate(
-            [
-                ("Phase", self.lbl_det_phase),
-                ("Score", self.lbl_det_score),
-                ("Side", self.lbl_det_side),
-                ("Signal", self.lbl_signal),
-                ("Reason", self.lbl_reason),
-                ("Reason codes", self.lbl_reason_codes),
-                ("Setup age", self.lbl_setup_age),
-                ("Reclaim hold", self.lbl_reclaim_hold),
-                ("Last invalid reason", self.lbl_last_invalid),
-            ]
-        ):
-            dg.addWidget(QLabel(k), i, 0)
-            dg.addWidget(v, i, 1)
+        self.lbl_last_invalid = self._make_value_label(12, Qt.AlignmentFlag.AlignLeft)
+
+        dg.addWidget(QLabel("PHASE"), 0, 0)
+        dg.addWidget(self.lbl_det_phase, 0, 1)
+        dg.addWidget(QLabel("SCORE"), 1, 0)
+        dg.addWidget(self.lbl_det_score, 1, 1)
+        dg.addWidget(self.score_bar, 2, 0, 1, 2)
+        dg.addWidget(QLabel("Signal lamp"), 3, 0)
+        dg.addWidget(self.lbl_signal, 3, 1)
+        dg.addWidget(QLabel("Reason"), 4, 0)
+        dg.addWidget(self.lbl_reason, 4, 1)
+        dg.addWidget(self.lbl_reason_codes, 5, 0, 1, 2)
+        dg.addWidget(QLabel("Setup age"), 6, 0)
+        dg.addWidget(self.lbl_setup_age, 6, 1)
+        dg.addWidget(QLabel("Reclaim hold"), 7, 0)
+        dg.addWidget(self.lbl_reclaim_hold, 7, 1)
+        dg.addWidget(QLabel("Last invalid"), 8, 0)
+        dg.addWidget(self.lbl_last_invalid, 8, 1)
 
         analyzer_card, ag = self._make_card("ANALYZER")
-        analyzer_card.setMinimumWidth(360)
+        analyzer_card.setMinimumWidth(340)
         self.lbl_fast_drop = self._make_value_label(16)
         self.lbl_fast_bounce = self._make_value_label(16)
         self.lbl_speed = self._make_value_label(16)
         self.lbl_volatility = self._make_value_label(16)
         self.lbl_spread_avg = self._make_value_label(16)
         self.lbl_state = self._make_value_label(14)
-        for i, (k, v) in enumerate(
-            [
-                ("Fast drop %", self.lbl_fast_drop),
-                ("Fast bounce %", self.lbl_fast_bounce),
-                ("Speed %/sec", self.lbl_speed),
-                ("Volatility %", self.lbl_volatility),
-                ("Spread avg %", self.lbl_spread_avg),
-                ("FSM state", self.lbl_state),
-            ]
-        ):
-            ag.addWidget(QLabel(k), i, 0)
-            ag.addWidget(v, i, 1)
+
+        self.bar_drop = QProgressBar(); self.bar_drop.setRange(0, 100)
+        self.bar_bounce = QProgressBar(); self.bar_bounce.setRange(0, 100)
+        self.bar_speed = QProgressBar(); self.bar_speed.setRange(0, 100)
+        self.bar_volatility = QProgressBar(); self.bar_volatility.setRange(0, 100)
+        self.bar_spread = QProgressBar(); self.bar_spread.setRange(0, 100)
+        for bar in (self.bar_drop, self.bar_bounce, self.bar_speed, self.bar_volatility, self.bar_spread):
+            bar.setTextVisible(False)
+            bar.setFixedHeight(8)
+
+        items = [
+            ("Drop %", self.lbl_fast_drop, self.bar_drop),
+            ("Bounce %", self.lbl_fast_bounce, self.bar_bounce),
+            ("Speed", self.lbl_speed, self.bar_speed),
+            ("Volatility", self.lbl_volatility, self.bar_volatility),
+            ("Spread avg", self.lbl_spread_avg, self.bar_spread),
+        ]
+        row = 0
+        for title, value, bar in items:
+            ag.addWidget(QLabel(title), row, 0)
+            ag.addWidget(value, row, 1)
+            row += 1
+            ag.addWidget(bar, row, 0, 1, 2)
+            row += 1
+
+        ag.addWidget(QLabel("FSM state"), row, 0)
+        ag.addWidget(self.lbl_state, row, 1)
 
         body.addWidget(market_card)
         body.addWidget(radar_card, 1)
@@ -224,31 +289,49 @@ class MainWindow(QMainWindow):
             QLabel { font-size: 11px; color: #93a8c8; }
             QLabel#value { color: #ecf4ff; }
             QLabel#value[size="30"] { font-size: 30px; font-weight: 700; color: #8ef2d0; }
-            QLabel#value[size="28"] { font-size: 28px; font-weight: 700; color: #8ef2d0; }
             QLabel#value[size="22"] { font-size: 22px; font-weight: 700; color: #9ed0ff; }
             QLabel#value[size="16"] { font-size: 16px; font-weight: 600; }
             QLabel#value[size="14"] { font-size: 14px; font-weight: 600; }
             QLabel#value[size="12"] { font-size: 12px; }
-            QLabel#value[size="11"] { font-size: 11px; }
-            #badge { border-radius: 9px; padding: 5px 10px; font-size: 11px; font-weight: 700; color: #0b1020; }
-            #badge[status="green"] { background: #32d296; }
-            #badge[status="gray"] { background: #64748b; color: #f8fafc; }
-            #badge[status="blue"] { background: #60a5fa; }
-            #badge[status="orange"] { background: #fb923c; }
-            #badge[status="red"] { background: #ef4444; color: #fef2f2; }
-            QPushButton { background: #1e2c49; color: #e2eeff; border: 1px solid #2d4570; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 700; }
+            QLabel#value[size="11"] { font-size: 11px; color:#8da2c4; }
+            #ledLabel { font-size: 11px; color: #c3d7f7; font-weight: 600; }
+            #ledLamp { border-radius: 8px; border: 1px solid #24395d; }
+            #ledLamp[status="off"] { background: #64748b; }
+            #ledLamp[status="green"] { background: #32d296; }
+            #ledLamp[status="blue"] { background: #60a5fa; }
+            #ledLamp[status="orange"] { background: #fb923c; }
+            #ledLamp[status="red"] { background: #ef4444; }
+            QPushButton { background: #1e2c49; color: #e2eeff; border: 1px solid #2d4570; border-radius: 8px; padding: 8px 12px; font-size: 12px; font-weight: 700; }
             QPushButton:hover { background: #2c4067; }
             QPushButton:pressed { background: #15213a; }
-            #logView { background: #0f1729; border: 1px solid #1f2e4b; border-radius: 8px; font-size: 11px; }
+            QProgressBar { background:#0f1729; border:1px solid #2a3d5e; border-radius:5px; height:18px; color:#dff3ff; }
+            QProgressBar::chunk { background:#32d296; border-radius:4px; }
+            #logView { background: #0f1729; border: 1px solid #1f2e4b; border-radius: 8px; font-size: 11px; font-family: "Consolas", "Courier New", monospace; }
             """
         )
+
+    def _update_leds(self, quality: str, phase: str, signal: str, tick_age_ms: int) -> None:
+        self._set_led(self.led_data, {"GOOD": "green", "WAITING": "off", "STALE": "orange", "BAD_SPREAD": "red"}.get(quality, "off"))
+        self._set_led(self.led_drop, "blue" if phase == "WATCHING_DROP" else ("orange" if phase == "LIQUIDITY_SWEEP" else "off"))
+        self._set_led(self.led_sweep, "orange" if phase == "LIQUIDITY_SWEEP" else "off")
+        self._set_led(self.led_reclaim, "orange" if phase == "RECLAIM_WAIT" else ("green" if "RECLAIM_CONFIRMED" in signal else "off"))
+        self._set_led(self.led_signal, "green" if signal == "LONG_SIGNAL" else "off")
+        block = "off"
+        if phase == "INVALIDATED":
+            block = "red"
+        elif quality in {"HIGH_SPREAD", "STALE", "BAD_SPREAD"}:
+            block = "orange" if quality == "HIGH_SPREAD" else "red"
+        self._set_led(self.led_block, block)
+
+        tick_status = "green" if tick_age_ms < 1000 else "orange" if tick_age_ms <= 3000 else "red"
+        self._set_led(self.led_tick_age, tick_status)
 
     def append_log(self, message: str) -> None:
         self.log_view.append(message)
 
     def on_status(self, status: str) -> None:
-        status_map = {"CONNECTED": "green", "DISCONNECTED": "gray", "STALE": "orange"}
-        self._set_badge(self.badge_ws, status, status_map.get(status, "gray"))
+        status_map = {"CONNECTED": "green", "DISCONNECTED": "off", "STALE": "orange"}
+        self._set_led(self.led_ws, status_map.get(status, "off"))
 
     def on_error(self, message: str) -> None:
         self.append_log(f"ERROR | {message}")
@@ -261,24 +344,6 @@ class MainWindow(QMainWindow):
         if fast_metrics.spread_avg_pct > MAX_ALLOWED_SPREAD_PCT:
             return "BAD_SPREAD"
         return "GOOD"
-
-    def _quality_status(self, quality: str) -> str:
-        return {
-            "GOOD": "green",
-            "WAITING": "gray",
-            "STALE": "orange",
-            "BAD_SPREAD": "red",
-            "HIGH_SPREAD": "orange",
-        }.get(quality, "gray")
-
-    def _phase_status(self, phase: str) -> str:
-        return {
-            "WATCHING_DROP": "blue",
-            "LIQUIDITY_SWEEP": "orange",
-            "RECLAIM_WAIT": "orange",
-            "LONG_SIGNAL": "green",
-            "INVALIDATED": "red",
-        }.get(phase, "gray")
 
     def on_tick(self, tick) -> None:
         self.buffer.add_tick(tick)
@@ -300,21 +365,27 @@ class MainWindow(QMainWindow):
         self.lbl_tick_rate.setText(f"{fast_metrics.tick_rate:.2f} t/s")
 
         quality = self._quality_label(fast_metrics)
-        self._set_badge(self.badge_quality, quality, self._quality_status(quality))
 
         self.lbl_det_phase.setText(signal.phase)
         self.lbl_det_score.setText(f"{signal.score:.2f}")
-        self.lbl_det_side.setText(signal.side)
-        self.lbl_reason_codes.setText(", ".join(signal.reason_codes) if signal.reason_codes else "-")
+        self.score_bar.setValue(max(0, min(100, int(signal.score))))
+        self.lbl_reason_codes.setText(" | ".join(signal.reason_codes) if signal.reason_codes else "-")
         self.lbl_reason.setText(signal.human_reason)
         self.lbl_setup_age.setText(f"{signal.setup_age_ms} ms")
         self.lbl_reclaim_hold.setText(f"{signal.reclaim_hold_ms} ms")
         self.lbl_last_invalid.setText(signal.last_invalid_reason)
 
         self.lbl_state.setText(result.state)
-        self.lbl_signal.setText(result.signal)
+        self.lbl_signal.setText("LONG READY" if result.signal == "LONG_SIGNAL" else "OFF")
 
-        self._set_badge(self.badge_phase, signal.phase, self._phase_status(signal.phase))
+        self.bar_drop.setValue(min(100, int(abs(fast_metrics.drop_pct) * 3000)))
+        self.bar_bounce.setValue(min(100, int(abs(fast_metrics.bounce_pct) * 3000)))
+        self.bar_speed.setValue(min(100, int(abs(fast_metrics.impulse_speed_pct_per_sec) * 500)))
+        self.bar_volatility.setValue(min(100, int(abs(fast_metrics.volatility_pct) * 4000)))
+        self.bar_spread.setValue(min(100, int(abs(fast_metrics.spread_avg_pct) * 8000)))
+
+        self._update_leds(quality, signal.phase, result.signal, int(time.time() * 1000) - tick.ts_ms)
+
         if result.signal == "LONG_SIGNAL":
             self.lbl_signal.setStyleSheet("color:#32d296;font-weight:700;")
         elif result.state == "INVALIDATED":
@@ -350,13 +421,14 @@ class MainWindow(QMainWindow):
         last = self.buffer.last()
         if not last:
             self.lbl_age.setText("-")
+            self._set_led(self.led_tick_age, "off")
             return
         age = now - last.ts_ms
         stale = self.buffer.is_stale(STALE_MS, now)
         age_text = f"{age} ms"
         if stale:
             age_text += " (STALE)"
-            self._set_badge(self.badge_ws, "STALE", "orange")
+            self.on_status("STALE")
         self.lbl_age.setText(age_text)
 
     def closeEvent(self, event):  # noqa: N802

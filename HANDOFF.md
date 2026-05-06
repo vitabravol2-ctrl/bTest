@@ -1,11 +1,11 @@
 # bTest HANDOFF
 
 ## Version
-v0.3.3
+v0.3.4
 
 ## What changed
 - Rebuilt GUI to cockpit/trading-dashboard style with:
-  - Top app header and status badges (WS, data quality, detector phase).
+  - Top app header and LED strip (WS, DATA, DROP, SWEEP, RECLAIM, SIGNAL, BLOCK).
   - Three fixed-width columns: MARKET, DETECTOR RADAR, ANALYZER.
   - Compact bottom log panel with controlled height.
 - Added helper GUI methods:
@@ -32,3 +32,5 @@ v0.3.3
 
 ## Next recommended step
 v0.4.0 — Signal Recorder + Replay Dataset
+
+- Added detector score progress bar and compact cockpit card spacing to reduce empty zones.
