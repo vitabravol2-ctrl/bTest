@@ -139,3 +139,9 @@ v0.4.4 — Replay Timeline GUI / calibration presets.
 - AUTO_EXIT is disabled by default.
 - No leverage/futures/grid/martingale/re-entry.
 - Tiny protected live gate only (manual entry + protected exit watcher).
+
+## v0.5.1.1 — Binance GUI Gate Diagnostics
+- Added transparent BINANCE statuses for mode/connection/balances/filters/validation/buy&sell gates/position/watcher.
+- MANUAL BUY requires: LIVE ENABLE, MAINNET (testnet off), BUY confirm, connection+balances+filters+validation OK, quote within limits, no open position.
+- SELL NOW requires: OPEN position, LIVE ENABLE, SELL confirm, qty > 0.
+- Mainnet tiny buy safety: Testnet OFF -> LIVE ON -> Load balances -> Load filters -> Validate order -> type BUY BTCUSDT -> click MANUAL BUY.

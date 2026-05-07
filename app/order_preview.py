@@ -16,4 +16,5 @@ class OrderPreview:
     budget_ok: bool = False
     can_submit_test_order: bool = False
     can_submit_live_order: bool = False
+    live_gate_ok: bool = False
     reason_codes: list[str] = field(default_factory=list)
