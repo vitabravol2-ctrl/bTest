@@ -60,6 +60,7 @@ from app.binance_client import BinanceClient
 from app.binance_filters import validate_market_buy_quote
 from app.position_state import PositionState, clear_position, load_position, save_position
 from app.exit_watcher import ExitWatcher
+from app.live_gate import LiveGateState, recompute_live_gates
 
 
 class MainWindow(QMainWindow):
@@ -84,7 +85,15 @@ class MainWindow(QMainWindow):
         self.last_binance_filters = []
         self.live_position: PositionState | None = None
         self.exit_watcher: ExitWatcher | None = None
+        self.binance_connection_ok=False
+        self.balances_loaded=False
+        self.filters_loaded=False
+        self.order_validation_ok=False
+        self.last_order_validation_reasons=[]
+        self.last_buy_block_reasons=[]
+        self.last_sell_block_reasons=[]
         self.last_balance_usdt: float = 0.0
+        self.last_balance_btc: float = 0.0
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
@@ -515,15 +524,16 @@ class MainWindow(QMainWindow):
         self.chk_auto_exit = QCheckBox("AUTO_EXIT_ENABLED")
         self.spin_tp_pct = QDoubleSpinBox(); self.spin_tp_pct.setRange(0.001, 10.0); self.spin_tp_pct.setDecimals(3); self.spin_tp_pct.setValue(0.05)
         self.spin_sl_pct = QDoubleSpinBox(); self.spin_sl_pct.setRange(-10.0, -0.001); self.spin_sl_pct.setDecimals(3); self.spin_sl_pct.setValue(-0.03)
-        self.lbl_position = QLabel("No position")
+        self.lbl_position = QLabel("Position: NONE")
         self.lbl_pnl = QLabel("PnL: -")
-        self.lbl_conn_status = QLabel("connection: unknown")
-        self.lbl_balance_status = QLabel("balance USDT: not loaded")
-        self.lbl_filters_status = QLabel("filters loaded: no")
-        self.lbl_validation_status = QLabel("validation result: not run")
-        self.lbl_live_gate_status = QLabel("live gate status: blocked")
-        self.lbl_buy_block_reason = QLabel("buy block reason: VALIDATION_REQUIRED")
-        self.lbl_buy_status = QLabel("Buy status: disabled (VALIDATION_REQUIRED)")
+        self.lbl_mode_status = QLabel("Mode: TESTNET" if self.chk_testnet.isChecked() else "Mode: MAINNET")
+        self.lbl_conn_status = QLabel("Connection: NOT TESTED")
+        self.lbl_balance_status = QLabel("Balance USDT: - | BTC: -")
+        self.lbl_filters_status = QLabel("Filters: NOT LOADED")
+        self.lbl_validation_status = QLabel("Validation: NOT CHECKED")
+        self.lbl_live_gate_status = QLabel("Buy gate: BLOCKED")
+        self.lbl_sell_gate_status = QLabel("Sell gate: BLOCKED")
+        self.lbl_buy_status = QLabel("Watcher: OFF")
         self.btn_save_keys.clicked.connect(self._save_binance_settings)
         self.btn_test_conn.clicked.connect(self._test_binance_connection)
         self.btn_load_bal.clicked.connect(self._load_binance_balances)
@@ -532,9 +542,9 @@ class MainWindow(QMainWindow):
         self.btn_test_order.clicked.connect(self._send_binance_test_order)
         self.btn_manual_buy.clicked.connect(self._manual_live_buy)
         self.btn_sell_now.clicked.connect(self._manual_sell_now)
-        self.chk_live.toggled.connect(lambda _v: self._refresh_live_buy_gate())
-        self.chk_testnet.toggled.connect(lambda _v: self._refresh_live_buy_gate())
-        self.edit_confirm.textChanged.connect(lambda _t: self._refresh_live_buy_gate())
+        self.chk_live.toggled.connect(lambda _v: self._recompute_live_gates())
+        self.chk_testnet.toggled.connect(lambda _v: self._recompute_live_gates())
+        self.edit_confirm.textChanged.connect(lambda _t: self._recompute_live_gates())
         bg.addWidget(QLabel("API Key"), 0, 0); bg.addWidget(self.edit_api_key, 0, 1)
         bg.addWidget(QLabel("API Secret"), 1, 0); bg.addWidget(self.edit_api_secret, 1, 1)
         bg.addWidget(self.chk_testnet, 2, 0, 1, 2)
@@ -552,18 +562,18 @@ class MainWindow(QMainWindow):
         bg.addWidget(self.btn_manual_buy, 14, 0); bg.addWidget(self.btn_sell_now, 14, 1)
         bg.addWidget(self.lbl_position, 15, 0, 1, 2)
         bg.addWidget(self.lbl_pnl, 16, 0, 1, 2)
-        bg.addWidget(self.lbl_conn_status, 17, 0, 1, 2)
-        bg.addWidget(self.lbl_balance_status, 18, 0, 1, 2)
-        bg.addWidget(self.lbl_filters_status, 19, 0, 1, 2)
-        bg.addWidget(self.lbl_validation_status, 20, 0, 1, 2)
-        bg.addWidget(self.lbl_live_gate_status, 21, 0, 1, 2)
-        bg.addWidget(self.lbl_buy_block_reason, 22, 0, 1, 2)
-        bg.addWidget(self.lbl_buy_status, 23, 0, 1, 2)
+        bg.addWidget(self.lbl_mode_status, 17, 0, 1, 2)
+        bg.addWidget(self.lbl_conn_status, 18, 0, 1, 2)
+        bg.addWidget(self.lbl_balance_status, 19, 0, 1, 2)
+        bg.addWidget(self.lbl_filters_status, 20, 0, 1, 2)
+        bg.addWidget(self.lbl_validation_status, 21, 0, 1, 2)
+        bg.addWidget(self.lbl_live_gate_status, 22, 0, 1, 2)
+        bg.addWidget(self.lbl_sell_gate_status, 23, 0, 1, 2)
+        bg.addWidget(self.lbl_buy_status, 24, 0, 1, 2)
         body.addWidget(binance_card)
         layout.addLayout(body, 1)
         layout.addWidget(self.log_view)
-        self._last_validation_ok = False
-        self._refresh_live_buy_gate()
+        self._recompute_live_gates()
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -899,26 +909,32 @@ class MainWindow(QMainWindow):
         save_settings(self.binance_settings)
         self.binance_client = BinanceClient(self.binance_settings)
         self.logger.info("audit: key saved key=%s testnet=%s", self.binance_settings.masked_api_key(), self.binance_settings.use_testnet)
-        self._refresh_live_buy_gate()
+        self._recompute_live_gates()
 
     def _test_binance_connection(self) -> None:
         ok = bool(self.binance_client.ping())
-        self.lbl_conn_status.setText(f"connection: {'OK' if ok else 'FAIL'}")
-        self.logger.info("Binance ping=%s time=%s", self.binance_client.ping(), self.binance_client.server_time())
+        self.binance_connection_ok = ok
+        self.lbl_conn_status.setText(f"Connection: {'OK' if ok else 'ERROR'}")
+        self.logger.info("audit: connection %s", "ok" if ok else "error")
+        self.logger.info("Binance ping=%s time=%s", ok, self.binance_client.server_time())
+        self._recompute_live_gates()
 
     def _load_binance_balances(self) -> None:
         account = self.binance_client.get_account()
         balances = [b for b in account.get("balances", []) if b.get("asset") in {"USDT", "BTC"}]
         self.last_balance_usdt = float(next((b.get("free", 0.0) for b in balances if b.get("asset") == "USDT"), 0.0))
-        self.lbl_balance_status.setText(f"balance USDT: {self.last_balance_usdt:.4f}")
-        self.logger.info("audit: balance loaded %s", balances)
-        self._refresh_live_buy_gate()
+        self.last_balance_btc = float(next((b.get("free", 0.0) for b in balances if b.get("asset") == "BTC"), 0.0))
+        self.balances_loaded = True
+        self.lbl_balance_status.setText(f"Balance USDT: {self.last_balance_usdt:.4f} | BTC: {self.last_balance_btc:.6f}")
+        self.logger.info("audit: balances loaded")
+        self._recompute_live_gates()
 
     def _load_binance_filters(self) -> None:
         self.last_binance_filters = self.binance_client.get_symbol_filters(self.binance_settings.symbol)
-        self.lbl_filters_status.setText("filters loaded: filters OK")
-        self.logger.info("Binance filters loaded for %s", self.binance_settings.symbol)
-        self._refresh_live_buy_gate()
+        self.filters_loaded = True
+        self.lbl_filters_status.setText("Filters: OK")
+        self.logger.info("audit: filters loaded for %s", self.binance_settings.symbol)
+        self._recompute_live_gates()
 
     def _validate_binance_order(self) -> None:
         check = validate_market_buy_quote(self.last_binance_filters, float(self.spin_budget.value()))
@@ -932,30 +948,34 @@ class MainWindow(QMainWindow):
         self._last_validation_ok = bool(ok)
         self.lbl_validation_status.setText(f"validation result: {'ok' if ok else 'fail'} {('|'.join(reason_codes)) if reason_codes else '-'}")
         self.logger.info("audit: buy preview %s", {"check": check, "budget": budget, "has_position": self.live_position is not None, "reason_codes": reason_codes})
-        self._refresh_live_buy_gate()
+        self._recompute_live_gates()
 
-    def _refresh_live_buy_gate(self) -> None:
-        reason = ""
-        if not self.chk_live.isChecked() or not self.binance_settings.live_enabled:
-            reason = "LIVE_DISABLED"
-        elif self.chk_testnet.isChecked() or self.binance_settings.use_testnet:
-            reason = "TESTNET_ON"
-        elif self.last_binance_filters is None:
-            reason = "FILTERS_NOT_LOADED"
-        elif self.last_balance_usdt <= 0:
-            reason = "BALANCE_NOT_LOADED"
-        elif not bool(getattr(self, "_last_validation_ok", False)):
-            reason = "VALIDATION_REQUIRED"
-        elif not self._typed_confirm_ok():
-            reason = "CONFIRM_REQUIRED"
-        elif self.live_position is not None and self.live_position.status == "OPEN":
-            reason = "OPEN_POSITION_EXISTS"
-        enabled = reason == ""
-        self.btn_manual_buy.setEnabled(enabled)
-        self.lbl_live_gate_status.setText(f"live gate status: {'OPEN' if enabled else 'BLOCKED'}")
-        self.lbl_buy_block_reason.setText(f"buy block reason: {reason or '-'}")
-        self.lbl_buy_status.setText(f"Buy status: {'enabled' if enabled else 'disabled'} ({reason or 'READY'})")
-        self.btn_sell_now.setEnabled(bool(self.live_position and self.live_position.status == "OPEN" and self._typed_sell_confirm_ok()))
+    def _recompute_live_gates(self) -> None:
+        state = LiveGateState(
+            live_enabled=bool(self.chk_live.isChecked() and self.binance_settings.live_enabled),
+            use_testnet=bool(self.chk_testnet.isChecked() or self.binance_settings.use_testnet),
+            confirm_text=self.edit_confirm.text(),
+            connection_ok=self.binance_connection_ok,
+            balances_loaded=self.balances_loaded,
+            filters_loaded=self.filters_loaded,
+            order_validation_ok=self.order_validation_ok,
+            balance_usdt=self.last_balance_usdt,
+            quote_amount=float(self.spin_budget.value()),
+            budget_limit=float(self.spin_budget.value()),
+            max_single_buy_usdt=float(self.spin_max_buy.value()),
+            has_open_position=bool(self.live_position and self.live_position.status == "OPEN"),
+            sell_qty=float(self.live_position.qty if self.live_position else 0.0),
+        )
+        gate = recompute_live_gates(state, self.binance_settings.symbol)
+        self.last_buy_block_reasons = list(gate.buy_reasons)
+        self.last_sell_block_reasons = list(gate.sell_reasons)
+        self.btn_manual_buy.setEnabled(gate.buy_enabled)
+        self.btn_sell_now.setEnabled(gate.sell_enabled)
+        self.lbl_mode_status.setText(f"Mode: {'TESTNET' if state.use_testnet else 'MAINNET'}")
+        self.lbl_live_gate_status.setText(f"Buy gate: {'READY' if gate.buy_enabled else 'BLOCKED: ' + ','.join(gate.buy_reasons[:2])}")
+        self.lbl_sell_gate_status.setText(f"Sell gate: {'READY' if gate.sell_enabled else 'BLOCKED: ' + ','.join(gate.sell_reasons[:2])}")
+        self.lbl_position.setText('Position: OPEN' if state.has_open_position else 'Position: NONE')
+        self.lbl_buy_status.setText(f"Watcher: {'ON' if self.exit_watcher else 'OFF'}")
 
     def _send_binance_test_order(self) -> None:
         r = self.binance_client.test_order_buy_market(self.binance_settings.symbol, float(self.spin_budget.value()))
@@ -994,7 +1014,7 @@ class MainWindow(QMainWindow):
         self.lbl_position.setText(f"Entry={entry_price:.2f} qty={qty:.6f} spent={spent:.4f} fee={fee:.6f}")
         self.logger.warning("audit: live buy filled %s", self.live_position.to_dict())
         self.logger.info("audit: position opened")
-        self._refresh_live_buy_gate()
+        self._recompute_live_gates()
 
 
     def _load_saved_position(self) -> None:
@@ -1003,7 +1023,7 @@ class MainWindow(QMainWindow):
             return
         self.lbl_position.setText(f"Position loaded: {self.live_position.symbol} qty={self.live_position.qty:.6f}")
         self._start_exit_watcher()
-        self._refresh_live_buy_gate()
+        self._recompute_live_gates()
         self.logger.info("audit: position opened restored")
 
     def _persist_position(self) -> None:
@@ -1047,7 +1067,7 @@ class MainWindow(QMainWindow):
         if self.exit_watcher:
             self.exit_watcher.stop()
             self.logger.info("audit: watcher stopped")
-        self._refresh_live_buy_gate()
+        self._recompute_live_gates()
 
 
     def _start_exit_watcher(self) -> None:
